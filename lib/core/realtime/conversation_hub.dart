@@ -124,7 +124,7 @@ class ConversationHub {
     final connection = _connection;
     if (connection == null ||
         connection.state != HubConnectionState.Connected) {
-      throw StateError('القناة غير متصلة');
+      return; // القناة مغلقة — markRead يجري عبر REST أيضاً.
     }
     await connection.send('MarkRead', args: [conversationId]);
   }
@@ -250,6 +250,7 @@ class ConversationHub {
   }
 
   void _onConversationRead(List<Object?>? args) {
+    if (_reads.isClosed) return;
     final payload = _firstMap(args);
     final conversationId = payload?['conversationId'] as String?;
     if (conversationId == null) return;

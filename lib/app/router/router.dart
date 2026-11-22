@@ -20,6 +20,7 @@ import 'package:tawrid_app/features/ph_listings/ph_listing_detail_page.dart';
 import 'package:tawrid_app/features/ph_listings/ph_listings_browse_page.dart';
 import 'package:tawrid_app/features/ph_listings/ph_my_listings_page.dart';
 import 'package:tawrid_app/features/auth/force_password_change_page.dart';
+import 'package:tawrid_app/features/ph_medicines/ph_import_medicines_page.dart';
 import 'package:tawrid_app/features/ph_medicines/ph_medicine_search_page.dart';
 import 'package:tawrid_app/features/ph_medicines/ph_warehouse_catalog_page.dart';
 import 'package:tawrid_app/features/ph_medicines/ph_price_search_page.dart';
@@ -157,6 +158,7 @@ final routerProvider = Provider<GoRouter>((ref) {
         TRoutes.phMyListings,
         TRoutes.phListingCreate,
         TRoutes.phMedicineSearch,
+        TRoutes.phImportMedicines,
         TRoutes.phWarehouseCatalog,
         TRoutes.phPriceSearch,
         TRoutes.phCart,
@@ -416,6 +418,13 @@ final routerProvider = Provider<GoRouter>((ref) {
         path: TRoutes.phMedicineSearch,
         parentNavigatorKey: _rootNavigatorKey,
         builder: (_, _) => const PhMedicineSearchPage(),
+      ),
+
+      // استيراد قائمة الأدوية — Excel / PDF (قريباً)
+      GoRoute(
+        path: TRoutes.phImportMedicines,
+        parentNavigatorKey: _rootNavigatorKey,
+        builder: (_, _) => const PhImportMedicinesPage(),
       ),
 
       // إعادة تعيين إجبارية لكلمة المرور — خارج أي Shell: لا تبويبات

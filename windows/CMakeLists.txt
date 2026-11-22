@@ -2,7 +2,9 @@
 cmake_minimum_required(VERSION 3.14)
 project(tawrid_app LANGUAGES CXX)
 
-# Firebase stub — يمنع محاولة تنزيل الـ SDK من dl.google.com (404).
+# Point firebase_core at the local stub SDK so the build never tries to
+# download firebase_cpp_sdk_windows_*.zip from dl.google.com (returns 404).
+# The stub satisfies the CMake requirements without linking real Firebase libs.
 if(NOT DEFINED ENV{FIREBASE_CPP_SDK_DIR})
   set(ENV{FIREBASE_CPP_SDK_DIR} "C:/firebase_stub")
 endif()

@@ -192,15 +192,14 @@ class _WhOrderDetailPageState extends ConsumerState<WhOrderDetailPage> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(
-        title: const Text('تفاصيل الطلب'),
-        actions: [
-          if (_order != null)
-            TextButton(
-              onPressed: _showExportSheet,
-              child: const Text('تصدير'),
-            ),
-        ],
+      appBar: InnerTopBar(
+        title: 'تفاصيل الطلب',
+        trailing: _order != null
+            ? TextButton(
+                onPressed: _showExportSheet,
+                child: const Text('تصدير'),
+              )
+            : null,
       ),
       body: _buildBody(),
       bottomNavigationBar: _order == null ? null : _buildActions(),

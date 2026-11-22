@@ -125,19 +125,26 @@ class _PhOrdersPageState extends ConsumerState<PhOrdersPage> {
             children: [
               Text('ترتيب الطلبيات', style: context.text.titleMedium),
               const SizedBox(height: AppSpacing.lg),
-              for (final mode in _SortMode.values)
-                RadioListTile<_SortMode>(
-                  value: mode,
-                  groupValue: _sortMode,
-                  title: Text(mode.label, style: context.text.bodyMedium),
-                  contentPadding: EdgeInsets.zero,
-                  onChanged: (v) {
-                    if (v != null) {
-                      setState(() => _sortMode = v);
-                      Navigator.pop(ctx);
-                    }
-                  },
+              RadioGroup<_SortMode>(
+                groupValue: _sortMode,
+                onChanged: (v) {
+                  if (v != null) {
+                    setState(() => _sortMode = v);
+                    Navigator.pop(ctx);
+                  }
+                },
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    for (final mode in _SortMode.values)
+                      RadioListTile<_SortMode>(
+                        value: mode,
+                        title: Text(mode.label, style: context.text.bodyMedium),
+                        contentPadding: EdgeInsets.zero,
+                      ),
+                  ],
                 ),
+              ),
             ],
           ),
         ),

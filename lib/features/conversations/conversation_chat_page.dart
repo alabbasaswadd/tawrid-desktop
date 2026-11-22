@@ -102,6 +102,8 @@ class _ConversationChatPageState extends ConsumerState<ConversationChatPage> {
       ? ref.read(whConversationRepositoryProvider)
       : ref.read(phConversationRepositoryProvider);
 
+  late final PushService _pushService;
+
   @override
   void initState() {
     super.initState();
@@ -109,7 +111,8 @@ class _ConversationChatPageState extends ConsumerState<ConversationChatPage> {
 
     // المحادثة أمام المستخدم: لا إشعار لرسائلها، ويُمحى ما تراكم منها في
     // شريط النظام — إشعارٌ برسالة يراها بعينه إزعاجٌ لا خدمة.
-    ref.read(pushServiceProvider).setOpenConversation(widget.conversationId);
+    _pushService = ref.read(pushServiceProvider);
+    _pushService.setOpenConversation(widget.conversationId);
     MessageNotifications.clear(widget.conversationId).ignore();
 
     _scrollCtrl.addListener(_onScroll);
@@ -177,7 +180,7 @@ class _ConversationChatPageState extends ConsumerState<ConversationChatPage> {
 
   @override
   void dispose() {
-    ref.read(pushServiceProvider).setOpenConversation(null);
+    _pushService.setOpenConversation(null);
     _liveSub?.cancel();
     _reconnectSub?.cancel();
     _readSub?.cancel();

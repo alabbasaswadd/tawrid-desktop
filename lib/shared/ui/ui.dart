@@ -14,6 +14,7 @@
 // الحالات:        ui_states (فارغ/خطأ/تحميل) · DotsLoader (انتظار الأزرار)
 // الهياكل:        app_shimmer (AppListSkeleton · AppDetailSkeleton · ShimmerBox)
 export 'app_bottom_nav.dart';
+export 'app_side_nav.dart';
 export 'app_shimmer.dart';
 export 'app_button.dart';
 export 'app_card.dart';

@@ -59,51 +59,103 @@ class _WhShellState extends ConsumerState<WhShell>
     }
   }
 
+  Widget _animatedContent({bool enableSwipe = true}) {
+    final content = AnimatedBuilder(
+      animation: _ctrl,
+      builder: (_, child) => FadeTransition(
+        opacity: _fade,
+        child: SlideTransition(
+          position: Tween<Offset>(
+            begin: Offset(_slideDir, 0),
+            end: Offset.zero,
+          ).animate(CurvedAnimation(parent: _ctrl, curve: Curves.easeOut)),
+          child: child,
+        ),
+      ),
+      child: widget.navigationShell,
+    );
+
+    if (!enableSwipe) return content;
+
+    return GestureDetector(
+      onHorizontalDragEnd: _onSwipe,
+      child: content,
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final hasUnread =
         (ref.watch(whUnreadConversationsProvider).value ?? 0) > 0;
+    final isDesktop = context.isTablet;
+
+    final items = [
+      const AppSideNavItem(icon: AppIcons.home, label: 'الرئيسية'),
+      const AppSideNavItem(icon: AppIcons.clipboardList, label: 'الطلبات'),
+      AppSideNavItem(
+        icon: AppIcons.messageSquare,
+        label: 'الرسائل',
+        showBadge: hasUnread,
+      ),
+      const AppSideNavItem(icon: AppIcons.package, label: 'أدويتي'),
+      const AppSideNavItem(icon: AppIcons.user, label: 'حسابي'),
+    ];
 
     return PopScope(
       canPop: widget.navigationShell.currentIndex == 0,
       onPopInvokedWithResult: (didPop, _) {
         if (!didPop && widget.navigationShell.currentIndex != 0) _onTap(0);
       },
-      child: Scaffold(
-        body: GestureDetector(
-          onHorizontalDragEnd: _onSwipe,
-          child: AnimatedBuilder(
-            animation: _ctrl,
-            builder: (_, child) => FadeTransition(
-              opacity: _fade,
-              child: SlideTransition(
-                position: Tween<Offset>(
-                  begin: Offset(_slideDir, 0),
-                  end: Offset.zero,
-                ).animate(
-                  CurvedAnimation(parent: _ctrl, curve: Curves.easeOut),
-                ),
-                child: child,
+      child: isDesktop
+          ? _DesktopShell(
+              sideNav: AppSideNav(
+                items: items,
+                currentIndex: widget.navigationShell.currentIndex,
+                onTap: _onTap,
+              ),
+              content: _animatedContent(enableSwipe: false),
+            )
+          : Scaffold(
+              body: _animatedContent(),
+              bottomNavigationBar: AppBottomNav(
+                currentIndex: widget.navigationShell.currentIndex,
+                onTap: _onTap,
+                items: [
+                  const AppBottomNavItem(
+                      icon: AppIcons.home, label: 'الرئيسية'),
+                  const AppBottomNavItem(
+                      icon: AppIcons.clipboardList, label: 'الطلبات'),
+                  AppBottomNavItem(
+                    icon: AppIcons.messageSquare,
+                    label: 'الرسائل',
+                    showBadge: hasUnread,
+                  ),
+                  const AppBottomNavItem(
+                      icon: AppIcons.package, label: 'أدويتي'),
+                  const AppBottomNavItem(
+                      icon: AppIcons.user, label: 'حسابي'),
+                ],
               ),
             ),
-            child: widget.navigationShell,
-          ),
-        ),
-        bottomNavigationBar: AppBottomNav(
-          currentIndex: widget.navigationShell.currentIndex,
-          onTap: _onTap,
-          items: [
-            const AppBottomNavItem(icon: AppIcons.home, label: 'الرئيسية'),
-            const AppBottomNavItem(icon: AppIcons.clipboardList, label: 'الطلبات'),
-            AppBottomNavItem(
-              icon: AppIcons.messageSquare,
-              label: 'الرسائل',
-              showBadge: hasUnread,
-            ),
-            const AppBottomNavItem(icon: AppIcons.package, label: 'أدويتي'),
-            const AppBottomNavItem(icon: AppIcons.user, label: 'حسابي'),
-          ],
-        ),
+    );
+  }
+}
+
+class _DesktopShell extends StatelessWidget {
+  const _DesktopShell({required this.sideNav, required this.content});
+
+  final Widget sideNav;
+  final Widget content;
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      body: Row(
+        // RTL: أول عنصر يظهر على اليمين — الـ SideNav على اليمين والمحتوى يساراً
+        children: [
+          sideNav,
+          Expanded(child: content),
+        ],
       ),
     );
   }

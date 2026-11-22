@@ -30,6 +30,8 @@ abstract final class TRoutes {
   // تفاصيل الطلب الوارد عند المستودع
   static const String whOrderDetailPattern = '/wh/orders/:orderId';
   static String whOrderDetail(String id) => '/wh/orders/$id';
+  static const String phImportMedicines = '/medicines/import';
+
   static const String phMedicineSearch = '/medicines/search';
 
   // بحث الأسعار المقارن (عروض + تسعير مباشر) والسلّة المبنيّة من نتائجه.
@@ -60,8 +62,9 @@ abstract final class TRoutes {
     required String name,
   }) {
     final q = 'q=${Uri.encodeComponent(name)}';
-    if (catalogItemId == null || catalogItemId.isEmpty)
+    if (catalogItemId == null || catalogItemId.isEmpty) {
       return '$phPriceSearch?$q';
+    }
     return '$phPriceSearch?catalogItemId=$catalogItemId&$q';
   }
 

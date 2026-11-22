@@ -100,6 +100,9 @@ class PushService {
   /// تهيئة Firebase مرة واحدة عند إقلاع التطبيق.
   Future<void> init() async {
     if (_ready) return;
+    // firebase_messaging لا يملك تنفيذاً لويندوز — الإشعارات هناك عبر
+    // flutter_local_notifications فقط، ولا حاجة لـ FCM.
+    if (!kIsWeb && defaultTargetPlatform == TargetPlatform.windows) return;
     try {
       if (kIsWeb) {
         if (!_WebFirebaseConfig.isComplete) {
@@ -158,6 +161,8 @@ class PushService {
       _log.w('[Push] Firebase غير مُهيّأ — لم يُسجَّل الجهاز ولن تصل إشعارات.');
       return;
     }
+    // FCM لا يعمل على ويندوز — الإشعارات هناك عبر flutter_local_notifications فقط.
+    if (!kIsWeb && defaultTargetPlatform == TargetPlatform.windows) return;
     try {
       final messaging = FirebaseMessaging.instance;
 
@@ -167,6 +172,7 @@ class PushService {
         return;
       }
 
+      // ignore: deprecated_member_use
       final token = await messaging.getToken();
       if (token == null || token.isEmpty) {
         _log.w('[Push] لا رمز FCM متاح.');
@@ -232,7 +238,9 @@ class PushService {
   // الرمز يتغيّر من تلقاء نفسه (إعادة تثبيت، مسح بيانات، دورة أمان)،
   // وبلا إعادة تسجيل تتوقّف الإشعارات صامتةً.
   void _listenForTokenRefresh() {
+    if (!kIsWeb && defaultTargetPlatform == TargetPlatform.windows) return;
     _refreshSub?.cancel();
+    // ignore: deprecated_member_use
     _refreshSub = FirebaseMessaging.instance.onTokenRefresh.listen((
       token,
     ) async {

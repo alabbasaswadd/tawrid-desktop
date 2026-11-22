@@ -111,10 +111,12 @@ class ApiException implements Exception {
     if (e.contains('is already taken')) return 'اسم المستخدم مستخدم من قبل';
     if (e.contains('already taken')) return 'هذه القيمة مستخدمة بالفعل';
     if (e.contains('is invalid')) return 'تنسيق غير صحيح';
-    if (e.toLowerCase().contains('password'))
+    if (e.toLowerCase().contains('password')) {
       return 'كلمة المرور لا تستوفي المتطلبات';
-    if (e.toLowerCase().contains('email') && e.contains('taken'))
+    }
+    if (e.toLowerCase().contains('email') && e.contains('taken')) {
       return 'البريد الإلكتروني مسجّل مسبقاً';
+    }
     return e;
   }
 

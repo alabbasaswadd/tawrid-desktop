@@ -241,24 +241,18 @@ class _PhOrderDetailPageState extends ConsumerState<PhOrderDetailPage> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(
-        title: const Text('تفاصيل الطلب'),
-        actions: [
-          if (_sharing)
-            const Padding(
-              padding: EdgeInsets.symmetric(horizontal: AppSpacing.md),
-              child: Center(
-                child: SizedBox(
-                    width: 18, height: 18,
-                    child: CircularProgressIndicator(strokeWidth: 2)),
+      appBar: InnerTopBar(
+        title: 'تفاصيل الطلب',
+        trailing: _sharing
+            ? const SizedBox(
+                width: 18,
+                height: 18,
+                child: CircularProgressIndicator(strokeWidth: 2),
+              )
+            : TextButton(
+                onPressed: _loading ? null : _showExportSheet,
+                child: const Text('تصدير'),
               ),
-            )
-          else
-            TextButton(
-              onPressed: _loading ? null : _showExportSheet,
-              child: const Text('تصدير'),
-            ),
-        ],
       ),
       body: RefreshIndicator(onRefresh: _load, child: _buildBody()),
       bottomNavigationBar: _order == null ? null : _buildBottomBar(),

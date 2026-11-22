@@ -89,4 +89,5 @@ abstract final class AppMotion {
 abstract final class AppBreakpoints {
   static const double tablet = 720;
   static const double maxContentWidth = 640;
+  static const double desktopSideNavWidth = 220;
 }

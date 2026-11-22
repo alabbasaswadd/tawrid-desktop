@@ -183,7 +183,9 @@ class InnerTopBar extends StatelessWidget implements PreferredSizeWidget {
   final bool showBack;
 
   @override
-  Size get preferredSize => const Size.fromHeight(60);
+  Size get preferredSize => Size.fromHeight(
+        (subtitle != null && subtitle!.isNotEmpty) ? 68 : 60,
+      );
 
   @override
   Widget build(BuildContext context) {
@@ -191,10 +193,7 @@ class InnerTopBar extends StatelessWidget implements PreferredSizeWidget {
     return SafeArea(
       bottom: false,
       child: Padding(
-        padding: const EdgeInsets.symmetric(
-          horizontal: AppSpacing.lg,
-          vertical: 10,
-        ),
+        padding: const EdgeInsets.symmetric(horizontal: AppSpacing.lg),
         child: Row(
           children: [
             if (showBack)

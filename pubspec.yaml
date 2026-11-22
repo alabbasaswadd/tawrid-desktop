@@ -53,6 +53,7 @@ dependencies:
   signalr_netcore: ^1.4.4
   flutter_local_notifications: 19.3.1
   image: ">=4.5.0 <4.11.0"
+  file_picker: ^8.1.7
 
 dev_dependencies:
   flutter_test:
@@ -71,7 +72,8 @@ flutter_launcher_icons:
   web:
     generate: false
   windows:
-    generate: false
+    generate: true
+    image_path: "assets/images/logo_icon.png"
   macos:
     generate: false
 
