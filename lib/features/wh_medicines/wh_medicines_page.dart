@@ -210,12 +210,6 @@ class _WhMedicinesPageState extends ConsumerState<WhMedicinesPage> {
       appBar: AppBar(
         title: const Text('أدوية مستودعي'),
         actions: [
-          // زر الاستيراد
-          IconButton(
-            icon: AppIcon(AppIcons.fileText, size: 20, color: cs.primary),
-            tooltip: 'استيراد من ملف',
-            onPressed: () => context.push(TRoutes.whImportInventory),
-          ),
           // زر الكتالوج العام: حدٌّ بلون العلامة — ثانوي لا رئيسي.
           Padding(
             padding: const EdgeInsets.symmetric(horizontal: AppSpacing.sm),
@@ -257,9 +251,18 @@ class _WhMedicinesPageState extends ConsumerState<WhMedicinesPage> {
 
     return Column(
       children: [
+        // بانر الاستيراد
         Padding(
           padding: const EdgeInsets.fromLTRB(
-              AppSpacing.page, AppSpacing.xs, AppSpacing.page, 0),
+              AppSpacing.page, AppSpacing.md, AppSpacing.page, 0),
+          child: _ImportBanner(
+            onTap: () => context.push(TRoutes.whImportInventory),
+          ),
+        ),
+
+        Padding(
+          padding: const EdgeInsets.fromLTRB(
+              AppSpacing.page, AppSpacing.md, AppSpacing.page, 0),
           child: AppSearchBar(
             hint: 'ابحث في أصناف المخزون…',
             onChanged: _onSearchChanged,
@@ -463,4 +466,77 @@ class _MedicineCard extends StatelessWidget {
     minimumSize: Size.zero,
     tapTargetSize: MaterialTapTargetSize.shrinkWrap,
   );
+}
+
+// ── بانر الاستيراد ────────────────────────────────────────────────────────────
+class _ImportBanner extends StatelessWidget {
+  const _ImportBanner({required this.onTap});
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final tk = context.tokens;
+
+    return Material(
+      color: Colors.transparent,
+      borderRadius: BorderRadius.circular(AppRadius.lg),
+      clipBehavior: Clip.antiAlias,
+      child: InkWell(
+        onTap: onTap,
+        child: Ink(
+          decoration: BoxDecoration(
+            gradient: LinearGradient(
+              colors: [tk.brandDeep, const Color(0xFF0A6B5C)],
+              begin: AlignmentDirectional.centerEnd,
+              end: AlignmentDirectional.centerStart,
+            ),
+            borderRadius: BorderRadius.circular(AppRadius.lg),
+          ),
+          padding: const EdgeInsets.symmetric(
+              horizontal: AppSpacing.lg, vertical: 14),
+          child: Row(
+            children: [
+              Container(
+                width: 44,
+                height: 44,
+                decoration: BoxDecoration(
+                  color: Colors.white.withValues(alpha: 0.15),
+                  borderRadius: BorderRadius.circular(AppRadius.md),
+                ),
+                child: const Center(
+                  child: AppIcon(AppIcons.fileText, size: 22,
+                      color: Colors.white),
+                ),
+              ),
+              const SizedBox(width: AppSpacing.md),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      'استيراد قائمة الأدوية',
+                      style: context.text.titleSmall?.copyWith(
+                        color: Colors.white,
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                    const SizedBox(height: 2),
+                    Text(
+                      'استورد مخزونك من ملف Excel أو PDF',
+                      style: context.text.bodySmall?.copyWith(
+                        color: Colors.white.withValues(alpha: 0.80),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(width: AppSpacing.sm),
+              AppIcon(AppIcons.chevronBackRtl, size: 18,
+                  color: Colors.white.withValues(alpha: 0.80)),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
 }
