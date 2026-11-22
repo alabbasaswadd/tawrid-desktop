@@ -1,0 +1,152 @@
+import 'dart:async';
+
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:tawrid_app/core/notifications/push_service.dart';
+import 'package:tawrid_app/core/storage/app_secure_storage.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+import 'package:tawrid_app/core/constants/storage_keys.dart';
+import 'package:tawrid_app/core/realtime/conversation_hub.dart';
+
+import 'session_state.dart';
+
+final pharmacySessionProvider =
+    AsyncNotifierProvider<PharmacySessionNotifier, SessionState>(
+      PharmacySessionNotifier.new,
+    );
+
+class PharmacySessionNotifier extends AsyncNotifier<SessionState> {
+  static const _store = appSecureStorage;
+
+  @override
+  Future<SessionState> build() async {
+    final prefs = await SharedPreferences.getInstance();
+    var hasSession = prefs.getBool(StorageKeys.hasPharmacySession);
+    if (hasSession == null) {
+      final token = await _store.read(key: StorageKeys.pharmacyToken);
+      hasSession = token != null && token.isNotEmpty;
+      await prefs.setBool(StorageKeys.hasPharmacySession, hasSession);
+    }
+    if (!hasSession) return const SessionUnauthenticated();
+    final token = await _store.read(key: StorageKeys.pharmacyToken) ?? '';
+    final userId = await _store.read(key: StorageKeys.pharmacyUserId);
+    final tenantId = await _store.read(key: StorageKeys.pharmacyTenantId);
+    final status = AccountStatus.fromName(
+      await _store.read(key: StorageKeys.pharmacyAccountStatus),
+    );
+    final mustChange =
+        await _store.read(key: StorageKeys.pharmacyMustChangePassword) == 'true';
+    // جلسة مُستعادة بعد إقلاع جديد: establish لا تُستدعى هنا، فلولا
+    // هذا السطر لبقيت القناة مغلقة حتى تسجيل دخول جديد.
+    unawaited(
+        ref.read(conversationHubProvider).connect(isWarehouse: false));
+
+    return SessionAuthenticated(
+      token: token,
+      userId: userId,
+      tenantId: tenantId,
+      accountStatus: status,
+      mustChangePassword: mustChange,
+    );
+  }
+
+  Future<void> establish({
+    required String token,
+    String? userId,
+    String? tenantId,
+    AccountStatus accountStatus = AccountStatus.approved,
+    bool mustChangePassword = false,
+  }) async {
+    await _store.write(key: StorageKeys.pharmacyToken, value: token);
+    if (userId != null) {
+      await _store.write(key: StorageKeys.pharmacyUserId, value: userId);
+    }
+    if (tenantId != null) {
+      await _store.write(key: StorageKeys.pharmacyTenantId, value: tenantId);
+    }
+    await _store.write(
+      key: StorageKeys.pharmacyAccountStatus,
+      value: accountStatus.name,
+    );
+    await _store.write(
+      key: StorageKeys.pharmacyMustChangePassword,
+      value: mustChangePassword.toString(),
+    );
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool(StorageKeys.hasPharmacySession, true);
+    state = AsyncData(
+      SessionAuthenticated(
+        token: token,
+        userId: userId,
+        tenantId: tenantId,
+        accountStatus: accountStatus,
+        mustChangePassword: mustChangePassword,
+      ),
+    );
+
+    // تسجيل الجهاز بعد قيام الجلسة لا قبلها: الطلب يحتاج توكناً، ولا
+    // نعرف قبلها لأي جهة نُسجّل. لا ننتظره حتى لا يؤخّر دخول المستخدم.
+    unawaited(
+        ref.read(pushServiceProvider).registerForSession(isWarehouse: false));
+
+    // قناة الأحداث الفورية تُفتح مع الجلسة: مجموعتها تُشتقّ من التوكن،
+    // فلا معنى لفتحها قبله. وهي إضافة لا شرط — تعثّرها لا يُعطّل الدخول.
+    unawaited(
+        ref.read(conversationHubProvider).connect(isWarehouse: false));
+  }
+
+  // تحديث حالة الحساب فقط (من /auth/me) دون المساس بالتوكن.
+  Future<void> setAccountStatus(AccountStatus status) async {
+    final current = state.value;
+    if (current is! SessionAuthenticated) return;
+    await _store.write(
+      key: StorageKeys.pharmacyAccountStatus,
+      value: status.name,
+    );
+    state = AsyncData(
+      SessionAuthenticated(
+        token: current.token,
+        userId: current.userId,
+        tenantId: current.tenantId,
+        accountStatus: status,
+        mustChangePassword: current.mustChangePassword,
+      ),
+    );
+  }
+
+  /// يرفع الحجب بعد تغيير كلمة المرور بنجاح — ويُحفَظ فلا يعود بعد إقلاع.
+  Future<void> clearMustChangePassword() async {
+    final current = state.value;
+    if (current is! SessionAuthenticated) return;
+    await _store.write(
+      key: StorageKeys.pharmacyMustChangePassword,
+      value: 'false',
+    );
+    state = AsyncData(
+      SessionAuthenticated(
+        token: current.token,
+        userId: current.userId,
+        tenantId: current.tenantId,
+        accountStatus: current.accountStatus,
+        mustChangePassword: false,
+      ),
+    );
+  }
+
+  Future<void> clear() async {
+    // إلغاء تسجيل الجهاز قبل محو التوكن — بعده يصبح الطلب بلا مصادقة.
+    // بلا هذا تواصل إشعارات الحساب السابق الوصول إلى الجهاز بعد خروجه.
+    await ref.read(conversationHubProvider).disconnect();
+    await ref.read(pushServiceProvider).unregisterForSession(isWarehouse: false);
+
+    // حذف مفاتيح الصيدلي فقط — deleteAll() كانت تمحو أيضاً جلسة
+    // المستودع (نفس الـ secure storage الفعلي لكليهما).
+    await _store.delete(key: StorageKeys.pharmacyToken);
+    await _store.delete(key: StorageKeys.pharmacyUserId);
+    await _store.delete(key: StorageKeys.pharmacyTenantId);
+    await _store.delete(key: StorageKeys.pharmacyAccountStatus);
+    await _store.delete(key: StorageKeys.pharmacyMustChangePassword);
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool(StorageKeys.hasPharmacySession, false);
+    state = const AsyncData(SessionUnauthenticated());
+  }
+}

@@ -1,0 +1,240 @@
+import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:go_router/go_router.dart';
+import 'package:tawrid_app/app/router/routes.dart';
+import 'package:tawrid_app/app/theme/app_spacing.dart';
+import 'package:tawrid_app/app/theme/app_tokens_ext.dart';
+import 'package:tawrid_app/app/theme/font_scale_provider.dart';
+import 'package:tawrid_app/core/session/pharmacy_session.dart';
+import 'package:tawrid_app/models/pharmacy_auth_models.dart';
+import 'package:tawrid_app/repositories/pharmacy_profile_repository.dart';
+import 'package:tawrid_app/shared/ui/ui.dart';
+import 'package:tawrid_app/shared/widgets/app_states.dart';
+import 'package:tawrid_app/shared/widgets/font_scale_sheet.dart';
+
+// حساب الصيدلية (Figma: الصيدلي / حسابي).
+class PhMorePage extends ConsumerWidget {
+  const PhMorePage({super.key});
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final cs = context.colors;
+    final tk = context.tokens;
+    final me = ref.watch(pharmacyMeProvider).value;
+
+    return Scaffold(
+      appBar: AppBar(title: const Text('حسابي')),
+      body: ListView(
+        padding: const EdgeInsets.fromLTRB(
+            AppSpacing.page, AppSpacing.sm, AppSpacing.page, AppSpacing.x3l),
+        children: [
+          // بطاقة الهوية — النقر عليها يعرض بيانات الحساب
+          _IdentityCard(
+            me: me,
+            onTap: () => context.push(TRoutes.phProfile),
+          ),
+
+          const SizedBox(height: AppSpacing.lg),
+          const _GroupLabel('الإعدادات'),
+          _Group(children: [
+            _Row(
+              icon: Icons.notifications_outlined,
+              label: 'الإشعارات',
+              onTap: () => context.push(TRoutes.phNotificationSettings),
+            ),
+            _Row(
+              icon: Icons.text_fields_outlined,
+              label: 'حجم الخط',
+              value: ref.watch(fontScaleProvider).label,
+              onTap: () => showFontScaleSheet(context, ref),
+            ),
+          ]),
+
+          const SizedBox(height: AppSpacing.lg),
+          AppCard(
+            onTap: () => _confirmLogout(context, ref),
+            padding: const EdgeInsets.symmetric(vertical: AppSpacing.lg),
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                Icon(Icons.logout, size: 18, color: cs.error),
+                const SizedBox(width: AppSpacing.sm),
+                Text('تسجيل الخروج',
+                    style: context.text.titleSmall?.copyWith(color: cs.error)),
+              ],
+            ),
+          ),
+
+          const SizedBox(height: AppSpacing.lg),
+          Center(
+            child: Text('توريد — منصة التوريد الدوائي',
+                style: context.text.labelSmall?.copyWith(color: tk.hint)),
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _confirmLogout(BuildContext context, WidgetRef ref) {
+    showDialog<void>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('تسجيل الخروج'),
+        content: const Text('هل تريد تسجيل الخروج من حساب الصيدلية؟'),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(ctx), child: const Text('إلغاء')),
+          FilledButton(
+            style: FilledButton.styleFrom(backgroundColor: context.colors.error),
+            onPressed: () async {
+              Navigator.pop(ctx);
+              await ref.read(pharmacySessionProvider.notifier).clear();
+              if (context.mounted) {
+                AppSnackbar.success(context, 'تم تسجيل الخروج');
+              }
+            },
+            child: const Text('خروج'),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _IdentityCard extends StatelessWidget {
+  const _IdentityCard({required this.me, this.onTap});
+  final PharmacyMe? me;
+  final VoidCallback? onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = context.colors;
+    final tk = context.tokens;
+
+    return AppCard(
+      onTap: onTap,
+      child: Row(
+        children: [
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(me?.pharmacyName ?? 'صيدليتي',
+                    style: context.text.titleLarge,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis),
+                const SizedBox(height: 2),
+                Text(
+                  me == null
+                      ? '—'
+                      : [me!.areaLabel, me!.phone]
+                          .where((s) => s.isNotEmpty)
+                          .join(' · '),
+                  style: context.text.bodySmall?.copyWith(color: tk.hint),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                ),
+                const SizedBox(height: 6),
+                Text(
+                  'اضغط لعرض بيانات الحساب',
+                  style: context.text.labelSmall?.copyWith(color: cs.primary),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(width: AppSpacing.sm),
+          const StatusBadge(
+              label: 'موثّق',
+              tone: StatusTone.success,
+              icon: Icons.verified_outlined),
+          const SizedBox(width: AppSpacing.sm),
+          Container(
+            width: 48,
+            height: 48,
+            decoration:
+                BoxDecoration(color: tk.brandSurface, shape: BoxShape.circle),
+            child: Center(
+              child: AppIcon(AppIcons.pill, size: 22, color: cs.primary),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _GroupLabel extends StatelessWidget {
+  const _GroupLabel(this.text);
+  final String text;
+
+  @override
+  Widget build(BuildContext context) => Padding(
+        padding: const EdgeInsets.only(bottom: AppSpacing.xs, right: 2),
+        child: Text(text,
+            style: context.text.labelMedium
+                ?.copyWith(color: context.tokens.hint, letterSpacing: 0.5)),
+      );
+}
+
+class _Group extends StatelessWidget {
+  const _Group({required this.children});
+  final List<Widget> children;
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = context.colors;
+    return AppCard(
+      padding: EdgeInsets.zero,
+      child: Column(
+        children: [
+          for (var i = 0; i < children.length; i++) ...[
+            children[i],
+            if (i != children.length - 1)
+              Divider(height: 1, indent: 52, color: cs.outline),
+          ],
+        ],
+      ),
+    );
+  }
+}
+
+class _Row extends StatelessWidget {
+  const _Row({
+    required this.icon,
+    required this.label,
+    required this.onTap,
+    this.value,
+  });
+
+  final IconData icon;
+  final String label;
+  final VoidCallback onTap;
+  final String? value;
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = context.colors;
+    final tk = context.tokens;
+
+    return InkWell(
+      onTap: onTap,
+      child: Padding(
+        padding: const EdgeInsets.symmetric(
+            horizontal: AppSpacing.lg, vertical: AppSpacing.md),
+        child: Row(
+          children: [
+            Icon(icon, size: 20, color: cs.onSurfaceVariant),
+            const SizedBox(width: AppSpacing.md),
+            Expanded(child: Text(label, style: context.text.bodyMedium)),
+            if (value != null) ...[
+              Text(value!,
+                  style: context.text.labelMedium?.copyWith(color: tk.hint)),
+              const SizedBox(width: AppSpacing.xs),
+            ],
+            AppIcon(AppIcons.chevronForwardRtl, size: 16, color: tk.hint),
+          ],
+        ),
+      ),
+    );
+  }
+}

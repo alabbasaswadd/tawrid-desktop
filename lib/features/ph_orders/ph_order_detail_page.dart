@@ -1,0 +1,1150 @@
+import 'dart:typed_data';
+
+import 'package:tawrid_app/features/ph_orders/ph_edit_order_page.dart';
+
+import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:pdf/pdf.dart';
+import 'package:pdf/widgets.dart' as pw;
+import 'package:printing/printing.dart';
+import 'package:tawrid_app/app/theme/app_spacing.dart';
+import 'package:tawrid_app/app/theme/app_tokens_ext.dart';
+import 'package:tawrid_app/core/network/api_exception.dart';
+import 'package:tawrid_app/models/enums.dart';
+import 'package:tawrid_app/models/supply_order_models.dart';
+import 'package:tawrid_app/repositories/supply_order_repository.dart';
+import 'package:tawrid_app/shared/ui/ui.dart';
+import 'package:tawrid_app/shared/utils/money.dart';
+import 'package:tawrid_app/shared/utils/relative_time.dart';
+import 'package:tawrid_app/shared/widgets/app_states.dart';
+import 'package:go_router/go_router.dart';
+import 'package:tawrid_app/app/router/routes.dart';
+import 'package:tawrid_app/repositories/conversation_repository.dart';
+
+import 'ph_orders_page.dart' show orderTone;
+
+// المسار الكامل للطلبية بالترتيب الذي يمرّ به فعلاً. «ملغاة» ليست محطة في
+// المسار بل خروج منه، فلا تظهر في الخط الزمني.
+const _orderJourney = <SupplyOrderStatus>[
+  SupplyOrderStatus.pending,
+  SupplyOrderStatus.confirmed,
+  SupplyOrderStatus.processing,
+  SupplyOrderStatus.shipped,
+  SupplyOrderStatus.delivered,
+  SupplyOrderStatus.completed,
+];
+
+String _journeyHint(SupplyOrderStatus s) => switch (s) {
+      SupplyOrderStatus.pending => 'بانتظار أن يؤكّد المستودع الطلبية',
+      SupplyOrderStatus.confirmed => 'أكّد المستودع الطلبية',
+      SupplyOrderStatus.processing => 'يجري تجهيز الأصناف',
+      SupplyOrderStatus.shipped => 'الشحنة في الطريق إليك',
+      SupplyOrderStatus.delivered => 'بانتظار استلام الصيدلية',
+      SupplyOrderStatus.completed => 'يُغلق الطلب وتُتاح فاتورة الشراء',
+      SupplyOrderStatus.cancelled => 'أُلغيت الطلبية',
+    };
+
+// تفاصيل الطلبية للصيدلي (Figma: الصيدلي / تفاصيل الطلب).
+class PhOrderDetailPage extends ConsumerStatefulWidget {
+  const PhOrderDetailPage({required this.orderId, super.key});
+
+  final String orderId;
+
+  @override
+  ConsumerState<PhOrderDetailPage> createState() => _PhOrderDetailPageState();
+}
+
+class _PhOrderDetailPageState extends ConsumerState<PhOrderDetailPage> {
+  SupplyOrderDetail? _order;
+  List<StatusHistoryItem> _history = const [];
+  bool _loading = true;
+  bool _busy = false;
+  bool _sharing = false;
+  ApiException? _error;
+
+  @override
+  void initState() {
+    super.initState();
+    _load();
+  }
+
+  Future<void> _load() async {
+    setState(() {
+      _loading = true;
+      _error = null;
+    });
+    try {
+      final repo = ref.read(supplyOrderRepositoryProvider);
+      final order = await repo.getOrderById(widget.orderId);
+      // سجلّ الحالات تفصيل مساعد: فشله لا يمنع عرض الطلبية نفسها.
+      List<StatusHistoryItem> history;
+      try {
+        history = await repo.getOrderHistory(widget.orderId);
+      } catch (_) {
+        history = const [];
+      }
+      if (!mounted) return;
+      setState(() {
+        _order = order;
+        _history = history;
+        _loading = false;
+      });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _error = ApiException.from(e);
+        _loading = false;
+      });
+    }
+  }
+
+  /// عملة أسعار هذه الطلبية — مجمَّدة فيها، لا ثابتَ منصّة.
+  String get _currency => _order?.currency ?? 'SYP';
+
+  double get _total {
+    final items = _order?.items ?? const <SupplyOrderItem>[];
+    return items.fold<double>(
+        0, (sum, i) => sum + (i.agreedUnitPrice ?? 0) * i.quantity);
+  }
+
+  // الكميات المجانية: يحسبها الخادم من شرائح البونص المركَّبة ويُجمّدها في
+  // الطلبية (freeQuantity). النسبة المئوية تبقى احتياطاً للطلبيات التي
+  // أُنشئت قبل الشرائح — وحسابها هنا لا يُعاد لئلّا يخالف ما اتُّفق عليه.
+  double get _freeUnits {
+    final items = _order?.items ?? const <SupplyOrderItem>[];
+    return items.fold<double>(0, (sum, i) => sum + _freeUnitsOf(i));
+  }
+
+  /// متى بلغت الطلبية هذه الحالة، إن سجّلها الخادم.
+  DateTime? _reachedAt(SupplyOrderStatus s) {
+    final order = _order;
+    if (order == null) return null;
+    if (s == SupplyOrderStatus.pending) return order.createdOn;
+    for (final h in _history) {
+      if (h.newStatus == s) return h.changedAt;
+    }
+    return null;
+  }
+
+  Future<void> _editOrder() async {
+    final order = _order;
+    if (order == null) return;
+    final updated = await Navigator.of(context).push<bool>(
+      MaterialPageRoute(builder: (_) => PhEditOrderPage(order: order)),
+    );
+    if (updated == true) await _load();
+  }
+
+  Future<void> _cancel() async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('إلغاء الطلبية'),
+        content: const Text('سيُبلَّغ المستودع بالإلغاء، ولا يمكن التراجع عنه.'),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('تراجع')),
+          FilledButton(
+            style: FilledButton.styleFrom(backgroundColor: context.colors.error),
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('إلغاء الطلبية'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true) return;
+
+    setState(() => _busy = true);
+    try {
+      await ref.read(supplyOrderRepositoryProvider).cancelOrder(widget.orderId);
+      if (!mounted) return;
+      AppSnackbar.success(context, 'أُلغيت الطلبية');
+      await _load();
+    } catch (e) {
+      if (mounted) AppSnackbar.error(context, ApiException.from(e).message);
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  // تُولَّد مرة واحدة فقط ومن طلبية مكتملة — الخادم يفرضها ونعكسها هنا.
+  Future<void> _generateInvoice() async {
+    setState(() => _busy = true);
+    try {
+      final res =
+          await ref.read(supplyOrderRepositoryProvider).generateInvoice(widget.orderId);
+      if (!mounted) return;
+      AppSnackbar.success(context, res.message);
+      await _load();
+    } catch (e) {
+      if (mounted) AppSnackbar.error(context, ApiException.from(e).message);
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  Future<void> _sharePdf() async {
+    final order = _order;
+    if (order == null) return;
+    setState(() => _sharing = true);
+    try {
+      final bytes = await _buildOrderPdf(order, _history, _total, _freeUnits);
+      await Printing.sharePdf(
+          bytes: bytes, filename: 'طلبية-${order.orderNumber}.pdf');
+    } catch (e) {
+      if (mounted) AppSnackbar.error(context, ApiException.from(e).message);
+    } finally {
+      if (mounted) setState(() => _sharing = false);
+    }
+  }
+
+  void _showExportSheet() {
+    showModalBottomSheet<void>(
+      context: context,
+      shape: const RoundedRectangleBorder(
+          borderRadius: BorderRadius.vertical(top: Radius.circular(AppRadius.lg))),
+      builder: (ctx) => SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(
+              AppSpacing.page, AppSpacing.lg, AppSpacing.page, AppSpacing.lg),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text('تصدير الطلب', style: context.text.titleMedium),
+              const SizedBox(height: AppSpacing.lg),
+              ListTile(
+                contentPadding: EdgeInsets.zero,
+                title: Text('تصدير إلى Excel', style: context.text.bodyMedium),
+                onTap: () {
+                  Navigator.pop(ctx);
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(content: Text('جاري تطوير التصدير إلى Excel')),
+                  );
+                },
+              ),
+              const Divider(height: 1),
+              ListTile(
+                contentPadding: EdgeInsets.zero,
+                title: Text('تصدير إلى PDF', style: context.text.bodyMedium),
+                onTap: () {
+                  Navigator.pop(ctx);
+                  _sharePdf();
+                },
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('تفاصيل الطلب'),
+        actions: [
+          if (_sharing)
+            const Padding(
+              padding: EdgeInsets.symmetric(horizontal: AppSpacing.md),
+              child: Center(
+                child: SizedBox(
+                    width: 18, height: 18,
+                    child: CircularProgressIndicator(strokeWidth: 2)),
+              ),
+            )
+          else
+            TextButton(
+              onPressed: _loading ? null : _showExportSheet,
+              child: const Text('تصدير'),
+            ),
+        ],
+      ),
+      body: RefreshIndicator(onRefresh: _load, child: _buildBody()),
+      bottomNavigationBar: _order == null ? null : _buildBottomBar(),
+    );
+  }
+
+  Widget _buildBody() {
+    if (_loading) return const AppDetailSkeleton();
+    if (_error != null) return ErrorState.of(_error!, onRetry: _load);
+
+    final order = _order!;
+    final tk = context.tokens;
+
+    return ListView(
+      padding: const EdgeInsets.fromLTRB(
+          AppSpacing.page, AppSpacing.sm, AppSpacing.page, AppSpacing.x3l),
+      children: [
+        _HeaderCard(order: order),
+
+        const SizedBox(height: AppSpacing.md),
+        AppCard(child: _Journey(order: order, reachedAt: _reachedAt)),
+
+        const SizedBox(height: AppSpacing.md),
+        AppCard(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              for (int idx = 0; idx < order.items.length; idx++) ...[
+                if (idx > 0)
+                  Padding(
+                    padding: const EdgeInsets.symmetric(vertical: AppSpacing.sm),
+                    child: Divider(height: 1, color: context.colors.outline),
+                  ),
+                _OrderItemRow(
+                  item: order.items[idx],
+                  currency: _currency,
+                  freeUnits: _freeUnitsOf(order.items[idx]),
+                ),
+              ],
+              const SizedBox(height: AppSpacing.sm),
+              if (_freeUnits > 0) ...[
+                Divider(color: context.colors.outline),
+                const SizedBox(height: AppSpacing.xs),
+                Row(
+                  children: [
+                    Expanded(
+                        child: Text('كميات مجانية',
+                            style: context.text.bodySmall?.copyWith(color: tk.hint))),
+                    Text('${formatQuantity(_freeUnits)} عبوة',
+                        style: context.text.titleSmall
+                            ?.copyWith(color: tk.goldStrong)),
+                  ],
+                ),
+                const SizedBox(height: AppSpacing.xs),
+              ],
+              Divider(color: context.colors.outline),
+              const SizedBox(height: AppSpacing.xs),
+              Row(
+                children: [
+                  Expanded(child: Text('الإجمالي', style: context.text.titleSmall)),
+                  Text(formatMoneyWith(_total, _currency),
+                      style: context.priceBrandStyle),
+                ],
+              ),
+            ],
+          ),
+        ),
+
+        if (_history.isNotEmpty) ...[
+          const SizedBox(height: AppSpacing.md),
+          AppCard(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text('سجلّ التغييرات', style: context.text.titleSmall),
+                const SizedBox(height: AppSpacing.xs),
+                for (final h in _history)
+                  Padding(
+                    padding: const EdgeInsets.only(bottom: 4),
+                    child: Text(
+                      '${h.oldStatus.label} ← ${h.newStatus.label} · '
+                      '${h.changedByName} · ${formatSmartTimestamp(h.changedAt)}',
+                      style: context.text.labelSmall?.copyWith(color: tk.hint),
+                    ),
+                  ),
+              ],
+            ),
+          ),
+        ],
+
+        const SizedBox(height: AppSpacing.md),
+        Text(
+          'يُتاح توليد فاتورة الشراء بعد اكتمال الطلب ومرة واحدة فقط، '
+          'ويمكنك إلغاء الطلب ما دام بانتظار التأكيد فقط.',
+          style: context.text.labelSmall?.copyWith(color: tk.hint),
+        ),
+      ],
+    );
+  }
+
+  Future<void> _contactWarehouse() async {
+    final order = _order!;
+    setState(() => _busy = true);
+    try {
+      final conv = await ref
+          .read(phConversationRepositoryProvider)
+          .openConversation(otherPartyId: order.supplyWarehouseId);
+      if (!mounted) return;
+      context.push(TRoutes.phConversationDetail(
+        conv.id,
+        conv.otherPartyName,
+        partyId: conv.otherPartyId,
+        partyType: conv.otherPartyType,
+      ));
+    } catch (e) {
+      if (mounted) AppSnackbar.error(context, ApiException.from(e).message);
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  void _showActionsSheet() {
+    final order = _order!;
+    final canCancel = order.status == SupplyOrderStatus.pending;
+    final canEdit = order.status == SupplyOrderStatus.pending;
+    final canInvoice =
+        order.status == SupplyOrderStatus.completed && !order.invoiceCreated;
+    final cs = context.colors;
+
+    showModalBottomSheet<void>(
+      context: context,
+      shape: const RoundedRectangleBorder(
+        borderRadius:
+            BorderRadius.vertical(top: Radius.circular(AppRadius.lg)),
+      ),
+      builder: (ctx) => SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(
+              AppSpacing.page, AppSpacing.lg, AppSpacing.page, AppSpacing.lg),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text('خيارات الطلبية', style: context.text.titleMedium),
+              const SizedBox(height: AppSpacing.sm),
+              ListTile(
+                contentPadding: EdgeInsets.zero,
+                leading: const Icon(Icons.chat_outlined),
+                title: const Text('تواصل مع المستودع'),
+                onTap: () {
+                  Navigator.pop(ctx);
+                  _contactWarehouse();
+                },
+              ),
+              if (canEdit) ...[
+                const Divider(height: 1),
+                ListTile(
+                  contentPadding: EdgeInsets.zero,
+                  leading: const Icon(Icons.edit_outlined),
+                  title: const Text('تعديل الطلبية'),
+                  onTap: () {
+                    Navigator.pop(ctx);
+                    _editOrder();
+                  },
+                ),
+              ],
+              if (canCancel) ...[
+                const Divider(height: 1),
+                ListTile(
+                  contentPadding: EdgeInsets.zero,
+                  leading: Icon(Icons.cancel_outlined, color: cs.error),
+                  title: Text('إلغاء الطلبية',
+                      style: TextStyle(color: cs.error)),
+                  onTap: () {
+                    Navigator.pop(ctx);
+                    _cancel();
+                  },
+                ),
+              ],
+              if (order.status == SupplyOrderStatus.completed) ...[
+                const Divider(height: 1),
+                ListTile(
+                  contentPadding: EdgeInsets.zero,
+                  leading: const Icon(Icons.receipt_outlined),
+                  title: Text(order.invoiceCreated
+                      ? 'الفاتورة مُولَّدة'
+                      : 'فاتورة الشراء'),
+                  enabled: canInvoice && !_busy,
+                  onTap: canInvoice && !_busy
+                      ? () {
+                          Navigator.pop(ctx);
+                          _generateInvoice();
+                        }
+                      : null,
+                ),
+              ],
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildBottomBar() {
+    final cs = context.colors;
+    final tk = context.tokens;
+    return SafeArea(
+      top: false,
+      child: Container(
+        decoration: BoxDecoration(
+          color: cs.surface,
+          border: Border(top: BorderSide(color: cs.outline)),
+          boxShadow: tk.navShadow,
+        ),
+        padding: const EdgeInsets.fromLTRB(
+            AppSpacing.page, AppSpacing.sm, AppSpacing.page, AppSpacing.md),
+        child: AppButton(
+          label: 'خيارات إضافية',
+          icon: Icons.tune_outlined,
+          loading: _busy,
+          onPressed: _busy ? null : _showActionsSheet,
+        ),
+      ),
+    );
+  }
+}
+
+// بطاقة رأس الطلبية (Figma): الرقم والحالة، المستودع، حالة التوصيل،
+// التسليم المتوقع، وملاحظاتك.
+class _HeaderCard extends StatelessWidget {
+  const _HeaderCard({required this.order});
+  final SupplyOrderDetail order;
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = context.colors;
+
+    return AppCard(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Expanded(
+                child: Text('طلب رقم ${order.orderNumber}',
+                    style: context.text.titleLarge),
+              ),
+              StatusBadge(label: order.status.label, tone: orderTone(order.status)),
+            ],
+          ),
+          const SizedBox(height: 10),
+          _MetaLine(
+            icon: AppIcons.warehouse,
+            text: '${order.warehouseName} — ${order.warehouseCity}',
+            color: cs.primary,
+          ),
+          const SizedBox(height: 6),
+          _MetaLine(icon: AppIcons.truck, text: _journeyHint(order.status)),
+          if (order.expectedDeliveryDate != null) ...[
+            const SizedBox(height: 6),
+            _MetaLine(
+              icon: AppIcons.calendar,
+              text:
+                  'التسليم المتوقع: ${formatSmartTimestamp(order.expectedDeliveryDate!)}',
+            ),
+          ],
+          if (order.notes != null && order.notes!.isNotEmpty) ...[
+            const SizedBox(height: 6),
+            _MetaLine(icon: AppIcons.fileText, text: 'ملاحظاتك: ${order.notes}'),
+          ],
+        ],
+      ),
+    );
+  }
+}
+
+// الخط الزمني للطلبية (Figma) — المحطات المنقضية بعلامة صح، والحالية
+// مملوءة، والقادمة برقمها فقط.
+class _Journey extends StatelessWidget {
+  const _Journey({required this.order, required this.reachedAt});
+
+  final SupplyOrderDetail order;
+  final DateTime? Function(SupplyOrderStatus) reachedAt;
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = context.colors;
+    final tk = context.tokens;
+
+    if (order.status == SupplyOrderStatus.cancelled) {
+      return Row(
+        children: [
+          Icon(Icons.cancel_outlined, color: cs.error, size: 20),
+          const SizedBox(width: AppSpacing.sm),
+          Expanded(
+            child: Text('أُلغيت هذه الطلبية ولم تكتمل.',
+                style: context.text.bodyMedium?.copyWith(color: cs.error)),
+          ),
+        ],
+      );
+    }
+
+    final currentIndex = _orderJourney.indexOf(order.status);
+
+    // أفقيّ لا رأسيّ: ستّ محطات رأسية كانت تستهلك شاشةً كاملة قبل أن يصل
+    // الصيدلي إلى الأصناف والإجمالي — وهما ما جاء من أجله. والمحطات صفٌّ
+    // واحد، وتفصيلُ المحطة الحالية وحدها أسفله (الباقي معروفٌ ضمناً).
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            for (final (i, step) in _orderJourney.indexed)
+              Expanded(
+                child: Column(
+                  children: [
+                    Row(
+                      children: [
+                        // الواصل نصفان: يسار الدائرة ويمينها — فيلتقي
+                        // نصفا كل محطتين متجاورتين خطّاً واحداً متّصلاً،
+                        // ويبقى طرفا الصفّ بلا خطّ معلّق.
+                        Expanded(
+                          child: Container(
+                            height: 2,
+                            color: i == 0
+                                ? Colors.transparent
+                                : (i <= currentIndex ? cs.primary : cs.outline),
+                          ),
+                        ),
+                        Container(
+                          width: 26,
+                          height: 26,
+                          decoration: BoxDecoration(
+                            shape: BoxShape.circle,
+                            color: i <= currentIndex ? cs.primary : cs.surface,
+                            border: Border.all(
+                              color: i <= currentIndex ? cs.primary : cs.outline,
+                            ),
+                          ),
+                          child: Center(
+                            child: i <= currentIndex
+                                ? Icon(
+                                    i == currentIndex
+                                        ? Icons.local_shipping_outlined
+                                        : Icons.check,
+                                    size: 14,
+                                    color: cs.onPrimary,
+                                  )
+                                : Text(
+                                    '${i + 1}',
+                                    style: context.text.labelSmall
+                                        ?.copyWith(color: tk.hint),
+                                  ),
+                          ),
+                        ),
+                        Expanded(
+                          child: Container(
+                            height: 2,
+                            color: i == _orderJourney.length - 1
+                                ? Colors.transparent
+                                : (i < currentIndex ? cs.primary : cs.outline),
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: AppSpacing.xs),
+                    Text(
+                      step.label,
+                      textAlign: TextAlign.center,
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                      style: context.text.labelSmall?.copyWith(
+                        color: i == currentIndex ? cs.primary : tk.hint,
+                        fontWeight: i == currentIndex ? FontWeight.w700 : null,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+          ],
+        ),
+
+        const SizedBox(height: AppSpacing.md),
+        Divider(height: 1, color: cs.outline),
+        const SizedBox(height: AppSpacing.sm),
+
+        // المحطة الحالية وحدها بتفصيلها: التسميات أعلاه مختصرة بحكم ضيق
+        // العمود، فالسطر هنا يقول أين وصلت الطلبية ومتى، أو ما يُنتظَر.
+        Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Icon(Icons.schedule, size: 16, color: cs.primary),
+            const SizedBox(width: AppSpacing.sm),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(order.status.label, style: context.text.titleSmall),
+                  const SizedBox(height: 2),
+                  Text(
+                    switch (reachedAt(order.status)) {
+                      final DateTime t => formatSmartTimestamp(t),
+                      _ => _journeyHint(order.status),
+                    },
+                    style: context.text.bodySmall?.copyWith(color: tk.hint),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ],
+    );
+  }
+}
+
+class _MetaLine extends StatelessWidget {
+  const _MetaLine({required this.icon, required this.text, this.color});
+  final AppIcons icon;
+  final String text;
+  final Color? color;
+
+  @override
+  Widget build(BuildContext context) {
+    final c = color ?? context.colors.onSurfaceVariant;
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Padding(
+          padding: const EdgeInsets.only(top: 2),
+          child: AppIcon(icon, size: 15, color: c),
+        ),
+        const SizedBox(width: 6),
+        Expanded(
+          child: Text(text, style: context.text.bodySmall?.copyWith(color: c)),
+        ),
+      ],
+    );
+  }
+}
+
+// صنف واحد في قائمة أصناف الطلبية — اسم + تفاصيل + بونص + إجمالي السطر.
+class _OrderItemRow extends StatelessWidget {
+  const _OrderItemRow({
+    required this.item,
+    required this.currency,
+    required this.freeUnits,
+  });
+
+  final SupplyOrderItem item;
+  final String currency;
+  final double freeUnits;
+
+  @override
+  Widget build(BuildContext context) {
+    final tk = context.tokens;
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                item.medicineName,
+                style: context.text.titleSmall,
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis,
+              ),
+              const SizedBox(height: 4),
+              Text(
+                '${formatQuantity(item.quantity)} ${item.unit}'
+                '${item.agreedUnitPrice == null ? '' : '  ·  سعر الوحدة '
+                    '${formatMoneyWith(item.agreedUnitPrice!, currency)}'}',
+                style: context.text.bodySmall?.copyWith(color: tk.hint),
+              ),
+              if (item.manufacturerName != null &&
+                  item.manufacturerName!.isNotEmpty) ...[
+                const SizedBox(height: 2),
+                Text(
+                  item.manufacturerName!,
+                  style: context.text.labelSmall?.copyWith(color: tk.hint),
+                ),
+              ],
+              if (freeUnits > 0) ...[
+                const SizedBox(height: AppSpacing.xs),
+                BonusBadge(
+                  label: '+${formatQuantity(freeUnits)} ${item.unit} مجاناً',
+                ),
+              ],
+            ],
+          ),
+        ),
+        const SizedBox(width: AppSpacing.sm),
+        Text(
+          item.agreedUnitPrice == null
+              ? '—'
+              : formatMoneyWith(item.agreedUnitPrice! * item.quantity, currency),
+          style: context.priceBrandStyle,
+        ),
+      ],
+    );
+  }
+}
+
+// ── توليد PDF للطلبية (تصميم فاتورة رسمية RTL بخط Cairo) ───────────────
+/// الكمية المجانية لصنف طلبية: المحسوبة من الخادم إن وُجدت، وإلا
+/// المشتقّة من النسبة القديمة. تعريفٌ واحد تستعمله الشاشة والفاتورة معاً.
+double _freeUnitsOf(SupplyOrderItem i) => i.freeQuantity > 0
+    ? i.freeQuantity
+    : i.quantity * ((i.bonusPercentage ?? 0) / 100);
+
+Future<Uint8List> _buildOrderPdf(
+  SupplyOrderDetail order,
+  List<StatusHistoryItem> history,
+  double total,
+  double freeUnits,
+) async {
+  final base = await PdfGoogleFonts.cairoRegular();
+  final bold = await PdfGoogleFonts.cairoBold();
+  final doc = pw.Document();
+
+  const brand = PdfColor.fromInt(0xFF042623);
+  const brandLight = PdfColor.fromInt(0xFFE2EDEB);
+  const rowAlt = PdfColor.fromInt(0xFFF4F7F7);
+  const grey = PdfColors.grey700;
+
+  final dateStr = order.createdOn.toLocal().toString().split(' ').first;
+
+  // عملة الفاتورة من الطلبية نفسها — فاتورةٌ بالدولار كانت تُطبع أرقامها
+  // مبتورةً وموسومةً «ل.س» قبل أن تحمل الطلبية عملتها.
+  final currency = order.currency;
+  final currencyTag = currencySymbol(currency);
+
+  // قيمة البونص = الكمية المجانية × سعر الوحدة. الكمية تأتي محسوبةً من
+  // الخادم (شرائح مركَّبة)، وتُشتقّ من النسبة للطلبيات التي سبقت الشرائح.
+  double totalBonus = 0;
+  for (final i in order.items) {
+    if (i.agreedUnitPrice == null) continue;
+    totalBonus += _freeUnitsOf(i) * i.agreedUnitPrice!;
+  }
+  final netAmount = total - totalBonus;
+
+  doc.addPage(
+    pw.MultiPage(
+      textDirection: pw.TextDirection.rtl,
+      theme: pw.ThemeData.withFont(base: base, bold: bold),
+      pageFormat: PdfPageFormat.a4,
+      margin: const pw.EdgeInsets.symmetric(horizontal: 32, vertical: 32),
+      footer: (ctx) => pw.Align(
+        alignment: pw.Alignment.center,
+        child: pw.Text(
+          'صفحة ${ctx.pageNumber} من ${ctx.pagesCount}',
+          style: const pw.TextStyle(fontSize: 9, color: PdfColors.grey600),
+        ),
+      ),
+      build: (ctx) => [
+        // ── رأس الفاتورة ──────────────────────────────────────────────────
+        pw.Row(
+          crossAxisAlignment: pw.CrossAxisAlignment.start,
+          children: [
+            // معلومات المستودع (يمين)
+            pw.Expanded(
+              child: pw.Column(
+                crossAxisAlignment: pw.CrossAxisAlignment.end,
+                children: [
+                  pw.Text(
+                    order.warehouseName,
+                    style: pw.TextStyle(fontSize: 22, fontWeight: pw.FontWeight.bold, color: brand),
+                  ),
+                  pw.SizedBox(height: 4),
+                  if (order.warehouseCity.isNotEmpty)
+                    pw.Text('مدينة ${order.warehouseCity}',
+                        style: pw.TextStyle(fontSize: 13, color: brand)),
+                  pw.SizedBox(height: 2),
+                  if (order.warehousePhone.isNotEmpty)
+                    pw.Text('📞 ${order.warehousePhone}',
+                        style: const pw.TextStyle(fontSize: 12)),
+                ],
+              ),
+            ),
+            pw.SizedBox(width: 16),
+            // شعار توريد (يسار)
+            pw.Container(
+              padding: const pw.EdgeInsets.all(10),
+              decoration: pw.BoxDecoration(
+                color: brand,
+                borderRadius: const pw.BorderRadius.all(pw.Radius.circular(10)),
+              ),
+              child: pw.Text(
+                'توريد',
+                style: pw.TextStyle(fontSize: 18, fontWeight: pw.FontWeight.bold, color: PdfColors.white),
+              ),
+            ),
+          ],
+        ),
+
+        pw.SizedBox(height: 12),
+        pw.Divider(color: brand, thickness: 1.5),
+        pw.SizedBox(height: 10),
+
+        // ── بيانات الفاتورة والعميل ───────────────────────────────────────
+        pw.Row(
+          crossAxisAlignment: pw.CrossAxisAlignment.start,
+          children: [
+            // يسار: اسم العميل وطريقة الدفع
+            pw.Expanded(
+              child: pw.Column(
+                crossAxisAlignment: pw.CrossAxisAlignment.start,
+                children: [
+                  pw.RichText(
+                    text: pw.TextSpan(children: [
+                      pw.TextSpan(text: 'اسم العميل:  ', style: pw.TextStyle(fontWeight: pw.FontWeight.bold, fontSize: 11)),
+                      pw.TextSpan(text: order.pharmacyName ?? '—', style: const pw.TextStyle(fontSize: 11)),
+                    ]),
+                  ),
+                  pw.SizedBox(height: 4),
+                  pw.RichText(
+                    text: pw.TextSpan(children: [
+                      pw.TextSpan(text: 'طريقة الدفع:  ', style: pw.TextStyle(fontWeight: pw.FontWeight.bold, fontSize: 11)),
+                      pw.TextSpan(text: 'آجل', style: const pw.TextStyle(fontSize: 11)),
+                    ]),
+                  ),
+                ],
+              ),
+            ),
+            pw.SizedBox(width: 24),
+            // يمين: رقم الطلبية والتاريخ
+            pw.Column(
+              crossAxisAlignment: pw.CrossAxisAlignment.end,
+              children: [
+                pw.RichText(
+                  text: pw.TextSpan(children: [
+                    pw.TextSpan(text: 'رقم الطلبية:  ', style: pw.TextStyle(fontWeight: pw.FontWeight.bold, fontSize: 11)),
+                    pw.TextSpan(text: order.orderNumber, style: const pw.TextStyle(fontSize: 11)),
+                  ]),
+                ),
+                pw.SizedBox(height: 4),
+                pw.RichText(
+                  text: pw.TextSpan(children: [
+                    pw.TextSpan(text: 'التاريخ:  ', style: pw.TextStyle(fontWeight: pw.FontWeight.bold, fontSize: 11)),
+                    pw.TextSpan(text: dateStr, style: const pw.TextStyle(fontSize: 11)),
+                  ]),
+                ),
+              ],
+            ),
+          ],
+        ),
+
+        pw.SizedBox(height: 14),
+
+        // ── جدول الأصناف ─────────────────────────────────────────────────
+        pw.TableHelper.fromTextArray(
+          headers: [
+            'التسلسل',
+            'الصنف',
+            'السعر الفردي\n($currencyTag)',
+            'العدد',
+            'السعر الإجمالي\n($currencyTag)',
+            'البونص\n($currencyTag)',
+          ],
+          data: order.items.asMap().entries.map((e) {
+            final idx = e.key + 1;
+            final i = e.value;
+            final lineTotal = (i.agreedUnitPrice ?? 0) * i.quantity;
+            final bonusVal = i.agreedUnitPrice == null
+                ? 0.0
+                : _freeUnitsOf(i) * i.agreedUnitPrice!;
+            return [
+              '$idx',
+              i.medicineName,
+              i.agreedUnitPrice == null
+                  ? '—'
+                  : formatAmount(i.agreedUnitPrice!, currency),
+              formatQuantity(i.quantity),
+              i.agreedUnitPrice == null ? '—' : formatAmount(lineTotal, currency),
+              bonusVal > 0 ? formatAmount(bonusVal, currency) : '0',
+            ];
+          }).toList(),
+          headerStyle: pw.TextStyle(fontWeight: pw.FontWeight.bold, color: PdfColors.white, fontSize: 10),
+          headerDecoration: const pw.BoxDecoration(color: brand),
+          cellAlignment: pw.Alignment.center,
+          cellStyle: const pw.TextStyle(fontSize: 10),
+          oddRowDecoration: const pw.BoxDecoration(color: rowAlt),
+          border: pw.TableBorder.all(color: brandLight, width: 0.5),
+          columnWidths: {
+            0: const pw.FixedColumnWidth(32),
+            1: const pw.FlexColumnWidth(3),
+            2: const pw.FlexColumnWidth(1.4),
+            3: const pw.FixedColumnWidth(40),
+            4: const pw.FlexColumnWidth(1.4),
+            5: const pw.FlexColumnWidth(1.2),
+          },
+        ),
+
+        // صف المجموع الكلي
+        pw.Container(
+          decoration: const pw.BoxDecoration(color: brandLight),
+          padding: const pw.EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+          child: pw.Row(
+            children: [
+              pw.Expanded(
+                flex: 5,
+                child: pw.Text('المجموع الكلي',
+                    style: pw.TextStyle(fontWeight: pw.FontWeight.bold, fontSize: 11),
+                    textAlign: pw.TextAlign.right),
+              ),
+              pw.SizedBox(width: 4),
+              pw.Expanded(
+                flex: 1,
+                child: pw.Text(formatAmount(total, currency),
+                    style: pw.TextStyle(fontWeight: pw.FontWeight.bold, fontSize: 11),
+                    textAlign: pw.TextAlign.center),
+              ),
+              pw.Expanded(
+                flex: 1,
+                child: pw.Text(
+                    totalBonus > 0 ? formatAmount(totalBonus, currency) : '0',
+                    style: pw.TextStyle(fontWeight: pw.FontWeight.bold, fontSize: 11),
+                    textAlign: pw.TextAlign.center),
+              ),
+            ],
+          ),
+        ),
+
+        pw.SizedBox(height: 16),
+
+        // ── ملخص المبالغ + الملاحظات ──────────────────────────────────────
+        pw.Row(
+          crossAxisAlignment: pw.CrossAxisAlignment.start,
+          children: [
+            // ملاحظات (يسار)
+            pw.Expanded(
+              flex: 5,
+              child: pw.Container(
+                padding: const pw.EdgeInsets.all(10),
+                decoration: pw.BoxDecoration(
+                  border: pw.Border.all(color: brandLight, width: 1),
+                  borderRadius: const pw.BorderRadius.all(pw.Radius.circular(6)),
+                ),
+                child: pw.Column(
+                  crossAxisAlignment: pw.CrossAxisAlignment.end,
+                  children: [
+                    pw.Text('ملاحظات:', style: pw.TextStyle(fontWeight: pw.FontWeight.bold, fontSize: 11)),
+                    pw.SizedBox(height: 6),
+                    pw.Text('- الأسعار شاملة الضريبة.', style: const pw.TextStyle(fontSize: 10, color: grey)),
+                    pw.Text('- يُمنع إعادة الصرف إلا بموافقة خطية.', style: const pw.TextStyle(fontSize: 10, color: grey)),
+                    pw.Text('- يُرجى التأكد من مطابقة الأصناف عند الاستلام.', style: const pw.TextStyle(fontSize: 10, color: grey)),
+                    if (order.notes != null && order.notes!.isNotEmpty)
+                      pw.Text('- ${order.notes}', style: const pw.TextStyle(fontSize: 10, color: grey)),
+                  ],
+                ),
+              ),
+            ),
+            pw.SizedBox(width: 12),
+            // ملخص المبالغ (يمين)
+            pw.Expanded(
+              flex: 4,
+              child: pw.Container(
+                decoration: pw.BoxDecoration(
+                  border: pw.Border.all(color: brandLight, width: 1),
+                  borderRadius: const pw.BorderRadius.all(pw.Radius.circular(6)),
+                ),
+                child: pw.Column(
+                  children: [
+                    _pdfSummaryRow('إجمالي المبلغ قبل الحسم والبونص',
+                        formatMoneyWith(total, currency), base, bold,
+                        isHeader: false),
+                    pw.Divider(color: brandLight, thickness: 0.5),
+                    _pdfSummaryRow('إجمالي الحسم', '0', base, bold),
+                    pw.Divider(color: brandLight, thickness: 0.5),
+                    _pdfSummaryRow(
+                        'إجمالي البونص',
+                        totalBonus > 0
+                            ? formatMoneyWith(totalBonus, currency)
+                            : '0',
+                        base,
+                        bold),
+                    pw.Divider(color: brand, thickness: 1),
+                    _pdfSummaryRow('المبلغ المستحق',
+                        formatMoneyWith(netAmount, currency), base, bold,
+                        isHeader: true),
+                  ],
+                ),
+              ),
+            ),
+          ],
+        ),
+
+        pw.SizedBox(height: 20),
+
+        // ── التوقيعات ─────────────────────────────────────────────────────
+        pw.Row(
+          mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
+          children: [
+            pw.Column(
+              crossAxisAlignment: pw.CrossAxisAlignment.start,
+              children: [
+                pw.Text('مدير المستودع', style: const pw.TextStyle(fontSize: 11, color: grey)),
+                pw.SizedBox(height: 20),
+                pw.Container(width: 100, height: 1, color: grey),
+              ],
+            ),
+            pw.Column(
+              crossAxisAlignment: pw.CrossAxisAlignment.end,
+              children: [
+                pw.Text('مع تحياتنا', style: const pw.TextStyle(fontSize: 11, color: grey)),
+                pw.SizedBox(height: 4),
+                pw.Text(order.warehouseName,
+                    style: pw.TextStyle(fontSize: 11, fontWeight: pw.FontWeight.bold)),
+                if (order.warehouseCity.isNotEmpty)
+                  pw.Text('مدينة ${order.warehouseCity}',
+                      style: const pw.TextStyle(fontSize: 10, color: grey)),
+              ],
+            ),
+          ],
+        ),
+
+        pw.SizedBox(height: 20),
+
+        // ── سجل حالات الطلبية ─────────────────────────────────────────────
+        if (history.isNotEmpty) ...[
+          pw.Text('سجل حالات الطلبية',
+              style: pw.TextStyle(fontSize: 12, fontWeight: pw.FontWeight.bold, color: brand)),
+          pw.SizedBox(height: 6),
+          pw.TableHelper.fromTextArray(
+            headers: ['الحالة السابقة', 'الحالة الجديدة', 'بواسطة', 'التاريخ'],
+            data: history.map((h) => [
+              h.oldStatus.label,
+              h.newStatus.label,
+              h.changedByName,
+              h.changedAt.toLocal().toString().substring(0, 16),
+            ]).toList(),
+            headerStyle: pw.TextStyle(fontWeight: pw.FontWeight.bold, color: PdfColors.white, fontSize: 9),
+            headerDecoration: const pw.BoxDecoration(color: brand),
+            cellStyle: const pw.TextStyle(fontSize: 9),
+            cellAlignment: pw.Alignment.center,
+            border: pw.TableBorder.all(color: brandLight, width: 0.5),
+          ),
+          pw.SizedBox(height: 20),
+        ],
+
+        // ── تذييل ─────────────────────────────────────────────────────────
+        pw.Container(
+          decoration: pw.BoxDecoration(
+            color: brandLight,
+            borderRadius: const pw.BorderRadius.all(pw.Radius.circular(8)),
+          ),
+          padding: const pw.EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+          child: pw.Row(
+            mainAxisAlignment: pw.MainAxisAlignment.center,
+            children: [
+              pw.Text(
+                'تم الشراء عبر منصة توريد الالكترونية',
+                style: pw.TextStyle(fontSize: 12, fontWeight: pw.FontWeight.bold, color: brand),
+              ),
+            ],
+          ),
+        ),
+      ],
+    ),
+  );
+
+  return doc.save();
+}
+
+pw.Widget _pdfSummaryRow(String label, String value, pw.Font base, pw.Font bold, {bool isHeader = false}) {
+  return pw.Padding(
+    padding: const pw.EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+    child: pw.Row(
+      mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
+      children: [
+        pw.Text(label,
+            style: pw.TextStyle(
+              fontSize: isHeader ? 11 : 10,
+              fontWeight: isHeader ? pw.FontWeight.bold : pw.FontWeight.normal,
+              color: isHeader ? const PdfColor.fromInt(0xFF042623) : PdfColors.grey700,
+            )),
+        pw.Text(value,
+            style: pw.TextStyle(
+              fontSize: isHeader ? 12 : 10,
+              fontWeight: isHeader ? pw.FontWeight.bold : pw.FontWeight.normal,
+              color: isHeader ? const PdfColor.fromInt(0xFF042623) : PdfColors.black,
+            )),
+      ],
+    ),
+  );
+}
