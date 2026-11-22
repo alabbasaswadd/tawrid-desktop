@@ -263,12 +263,9 @@ class _WhMedicinesPageState extends ConsumerState<WhMedicinesPage> {
 
         Padding(
           padding: const EdgeInsets.fromLTRB(
-              AppSpacing.page, AppSpacing.sm, AppSpacing.page, 0),
-          child: AppButton(
-            label: 'استيراد من Excel أو PDF',
-            variant: AppButtonVariant.outline,
-            compact: true,
-            onPressed: () => context.push(TRoutes.whImportInventory),
+              AppSpacing.page, AppSpacing.xs, AppSpacing.page, 0),
+          child: _ImportChip(
+            onTap: () => context.push(TRoutes.whImportInventory),
           ),
         ),
 
@@ -468,5 +465,41 @@ class _MedicineCard extends StatelessWidget {
     minimumSize: Size.zero,
     tapTargetSize: MaterialTapTargetSize.shrinkWrap,
   );
+}
+
+class _ImportChip extends StatelessWidget {
+  const _ImportChip({required this.onTap});
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = context.colors;
+    final tk = context.tokens;
+    return Material(
+      color: tk.brandSurface,
+      borderRadius: BorderRadius.circular(AppRadius.full),
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(AppRadius.full),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(
+              horizontal: AppSpacing.lg, vertical: AppSpacing.sm),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              AppIcon(AppIcons.fileText, size: 16, color: cs.primary),
+              const SizedBox(width: AppSpacing.xs),
+              Text(
+                'استيراد مخزون الأدوية الخاص بي',
+                style: context.text.bodySmall?.copyWith(color: cs.primary),
+              ),
+              const SizedBox(width: AppSpacing.xs),
+              AppIcon(AppIcons.chevronForwardRtl, size: 14, color: tk.hint),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
 }
 
