@@ -485,15 +485,15 @@ class _ImportChip extends StatelessWidget {
           padding: const EdgeInsets.symmetric(
               horizontal: AppSpacing.lg, vertical: AppSpacing.sm),
           child: Row(
-            mainAxisSize: MainAxisSize.min,
             children: [
               AppIcon(AppIcons.fileText, size: 16, color: cs.primary),
               const SizedBox(width: AppSpacing.xs),
-              Text(
-                'استيراد مخزون الأدوية الخاص بي',
-                style: context.text.bodySmall?.copyWith(color: cs.primary),
+              Expanded(
+                child: Text(
+                  'استيراد مخزون الأدوية الخاص بي',
+                  style: context.text.bodySmall?.copyWith(color: cs.primary),
+                ),
               ),
-              const SizedBox(width: AppSpacing.xs),
               AppIcon(AppIcons.chevronForwardRtl, size: 14, color: tk.hint),
             ],
           ),
