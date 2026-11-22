@@ -13,10 +13,13 @@ class WhImportInventoryPage extends StatefulWidget {
 
 enum _ImportState { idle, loading, done }
 
+enum _FileKind { excel, pdf }
+
 class _WhImportInventoryPageState extends State<WhImportInventoryPage>
     with SingleTickerProviderStateMixin {
   _ImportState _state = _ImportState.idle;
   String? _fileName;
+  _FileKind? _fileKind;
   late final AnimationController _spinCtrl;
 
   @override
@@ -34,16 +37,21 @@ class _WhImportInventoryPageState extends State<WhImportInventoryPage>
     super.dispose();
   }
 
-  Future<void> _pickFile() async {
+  Future<void> _pickFile(_FileKind kind) async {
     final result = await FilePicker.platform.pickFiles(
       type: FileType.custom,
-      allowedExtensions: ['xlsx', 'xls', 'csv'],
-      dialogTitle: 'اختر ملف المخزون',
+      allowedExtensions: kind == _FileKind.excel
+          ? ['xlsx', 'xls', 'csv']
+          : ['pdf'],
+      dialogTitle: kind == _FileKind.excel
+          ? 'اختر ملف Excel'
+          : 'اختر ملف PDF',
     );
     if (result == null || result.files.isEmpty) return;
 
     setState(() {
       _fileName = result.files.single.name;
+      _fileKind = kind;
       _state = _ImportState.loading;
     });
     _spinCtrl.repeat();
@@ -70,9 +78,12 @@ class _WhImportInventoryPageState extends State<WhImportInventoryPage>
               transitionBuilder: (child, anim) =>
                   FadeTransition(opacity: anim, child: child),
               child: switch (_state) {
-                _ImportState.idle => _IdleView(onTap: _pickFile),
-                _ImportState.loading =>
-                  _LoadingView(fileName: _fileName, controller: _spinCtrl),
+                _ImportState.idle => _IdleView(onPick: _pickFile),
+                _ImportState.loading => _LoadingView(
+                    fileName: _fileName,
+                    fileKind: _fileKind,
+                    controller: _spinCtrl,
+                  ),
                 _ImportState.done => const _DoneView(),
               },
             ),
@@ -83,10 +94,10 @@ class _WhImportInventoryPageState extends State<WhImportInventoryPage>
   }
 }
 
-// ── الحالة الأولى: زر الاختيار ───────────────────────────────────────────
+// ── الحالة الأولى: اختيار نوع الملف ─────────────────────────────────────
 class _IdleView extends StatelessWidget {
-  const _IdleView({required this.onTap});
-  final VoidCallback onTap;
+  const _IdleView({required this.onPick});
+  final void Function(_FileKind) onPick;
 
   @override
   Widget build(BuildContext context) {
@@ -104,52 +115,139 @@ class _IdleView extends StatelessWidget {
             borderRadius: BorderRadius.circular(AppRadius.lg),
           ),
           child: Center(
-            child: AppIcon(AppIcons.fileText, size: 36, color: cs.primary),
+            child: AppIcon(AppIcons.clipboardList, size: 36, color: cs.primary),
           ),
         ),
         const SizedBox(height: AppSpacing.lg),
         Text(
-          'استيراد مخزونك',
+          'استيراد قائمة الأدوية',
           style: context.text.titleLarge,
           textAlign: TextAlign.center,
         ),
         const SizedBox(height: AppSpacing.sm),
         Text(
-          'استورد قائمة أدويتك مباشرةً من ملف Excel\n'
-          'بصيغة .xlsx أو .xls أو .csv',
+          'استورد مخزونك مباشرةً من ملف Excel أو PDF',
           style: context.text.bodyMedium?.copyWith(color: tk.hint),
           textAlign: TextAlign.center,
         ),
         const SizedBox(height: AppSpacing.x3l),
-        SizedBox(
-          width: double.infinity,
-          child: AppButton(
-            label: 'اختر ملف Excel',
-            onPressed: onTap,
-          ),
-        ),
-        const SizedBox(height: AppSpacing.md),
-        // تلميح صغير
+
+        // بطاقتا الاختيار: Excel و PDF جنباً لجنب
         Row(
-          mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            AppIcon(AppIcons.fileText, size: 14, color: tk.hint),
-            const SizedBox(width: 4),
-            Text(
-              'xlsx · xls · csv',
-              style: context.text.labelSmall?.copyWith(color: tk.hint),
+            Expanded(
+              child: _FileTypeCard(
+                icon: AppIcons.fileText,
+                label: 'Excel',
+                ext: '.xlsx / .xls / .csv',
+                accentColor: const Color(0xFF217346),
+                surfaceColor: const Color(0xFFE8F5EE),
+                onTap: () => onPick(_FileKind.excel),
+              ),
+            ),
+            const SizedBox(width: AppSpacing.md),
+            Expanded(
+              child: _FileTypeCard(
+                icon: AppIcons.fileText,
+                label: 'PDF',
+                ext: '.pdf',
+                accentColor: const Color(0xFFD32F2F),
+                surfaceColor: const Color(0xFFFDEBEB),
+                onTap: () => onPick(_FileKind.pdf),
+              ),
             ),
           ],
+        ),
+
+        const SizedBox(height: AppSpacing.x2l),
+
+        AppCard(
+          padding: const EdgeInsets.symmetric(
+              horizontal: AppSpacing.lg, vertical: AppSpacing.md),
+          child: Row(
+            children: [
+              AppIcon(AppIcons.info, size: 16, color: cs.primary),
+              const SizedBox(width: AppSpacing.sm),
+              Expanded(
+                child: Text(
+                  'تأكّد من تطابق أعمدة الملف مع القالب المعتمد قبل الاستيراد',
+                  style: context.text.bodySmall?.copyWith(color: tk.hint),
+                ),
+              ),
+            ],
+          ),
         ),
       ],
     );
   }
 }
 
+class _FileTypeCard extends StatelessWidget {
+  const _FileTypeCard({
+    required this.icon,
+    required this.label,
+    required this.ext,
+    required this.accentColor,
+    required this.surfaceColor,
+    required this.onTap,
+  });
+
+  final AppIcons icon;
+  final String label;
+  final String ext;
+  final Color accentColor;
+  final Color surfaceColor;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return AppCard(
+      onTap: onTap,
+      padding: const EdgeInsets.symmetric(
+          horizontal: AppSpacing.lg, vertical: AppSpacing.xl),
+      child: Column(
+        children: [
+          Container(
+            width: 52,
+            height: 52,
+            decoration: BoxDecoration(
+              color: surfaceColor,
+              borderRadius: BorderRadius.circular(AppRadius.md),
+            ),
+            child: Center(
+              child: AppIcon(icon, size: 26, color: accentColor),
+            ),
+          ),
+          const SizedBox(height: AppSpacing.md),
+          Text(
+            label,
+            style: context.text.titleMedium?.copyWith(
+              color: accentColor,
+              fontWeight: FontWeight.w700,
+            ),
+          ),
+          const SizedBox(height: 4),
+          Text(
+            ext,
+            style: context.text.labelSmall
+                ?.copyWith(color: context.tokens.hint),
+            textAlign: TextAlign.center,
+          ),
+        ],
+      ),
+    );
+  }
+}
+
 // ── حالة المعالجة: أنيميشن دوران ─────────────────────────────────────────
 class _LoadingView extends StatelessWidget {
-  const _LoadingView({required this.fileName, required this.controller});
+  const _LoadingView({
+    required this.fileName,
+    required this.fileKind,
+    required this.controller,
+  });
   final String? fileName;
+  final _FileKind? fileKind;
   final AnimationController controller;
 
   @override
@@ -183,7 +281,9 @@ class _LoadingView extends StatelessWidget {
         ),
         const SizedBox(height: AppSpacing.xl),
         Text(
-          'جاري معالجة الملف…',
+          fileKind == _FileKind.pdf
+              ? 'جاري قراءة ملف PDF…'
+              : 'جاري معالجة ملف Excel…',
           style: context.text.titleMedium,
           textAlign: TextAlign.center,
         ),

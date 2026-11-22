@@ -42,6 +42,7 @@ import 'package:tawrid_app/features/wh_auth/wh_login_page.dart';
 import 'package:tawrid_app/features/wh_auth/wh_register_page.dart';
 import 'package:tawrid_app/features/wh_auth/wh_service_areas_page.dart';
 import 'package:tawrid_app/features/wh_home/wh_home_page.dart';
+import 'package:tawrid_app/features/wh_medicines/wh_import_inventory_page.dart';
 import 'package:tawrid_app/features/wh_medicines/wh_medicine_catalog_page.dart';
 import 'package:tawrid_app/features/wh_medicines/wh_medicines_page.dart';
 import 'package:tawrid_app/features/wh_more/wh_more_page.dart';
@@ -196,6 +197,7 @@ final routerProvider = Provider<GoRouter>((ref) {
         TRoutes.whListings,
         TRoutes.whServiceAreas,
         TRoutes.whMedicines,
+        TRoutes.whImportInventory,
         TRoutes.whMedicineCatalog,
         TRoutes.whCreateOffer,
         TRoutes.whProfile,
@@ -309,6 +311,13 @@ final routerProvider = Provider<GoRouter>((ref) {
         path: TRoutes.whMedicineCatalog,
         parentNavigatorKey: _rootNavigatorKey,
         builder: (_, _) => const WhMedicineCatalogPage(),
+      ),
+
+      // استيراد مخزون المستودع من Excel أو PDF (قريباً)
+      GoRoute(
+        path: TRoutes.whImportInventory,
+        parentNavigatorKey: _rootNavigatorKey,
+        builder: (_, _) => const WhImportInventoryPage(),
       ),
 
       // إنشاء عرض بيع — الأصناف تُختار من أدوية المستودع فقط

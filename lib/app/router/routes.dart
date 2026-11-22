@@ -102,6 +102,7 @@ abstract final class TRoutes {
   static const String phWarehouseProfilePattern = '/warehouses/:warehouseId';
   static String phWarehouseProfile(String id) => '/warehouses/$id';
   static const String whMedicines = '/wh/medicines';
+  static const String whImportInventory = '/wh/medicines/import';
   static const String whMedicineCatalog = '/wh/medicines/catalog';
   static const String whCreateOffer = '/wh/offers/create';
   static const String whSubmitTenderOfferPattern =

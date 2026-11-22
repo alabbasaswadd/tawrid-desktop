@@ -210,6 +210,12 @@ class _WhMedicinesPageState extends ConsumerState<WhMedicinesPage> {
       appBar: AppBar(
         title: const Text('أدوية مستودعي'),
         actions: [
+          // زر الاستيراد
+          IconButton(
+            icon: AppIcon(AppIcons.fileText, size: 20, color: cs.primary),
+            tooltip: 'استيراد من ملف',
+            onPressed: () => context.push(TRoutes.whImportInventory),
+          ),
           // زر الكتالوج العام: حدٌّ بلون العلامة — ثانوي لا رئيسي.
           Padding(
             padding: const EdgeInsets.symmetric(horizontal: AppSpacing.sm),
