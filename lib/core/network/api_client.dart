@@ -63,6 +63,31 @@ class ApiClient {
     return _unwrap(res.data);
   }
 
+  /// رفع ملف (multipart). الترويسة تُمرَّر صراحةً لأن `BaseOptions` تُثبّت
+  /// `application/json` على كل طلب، وهي تطغى على ما يستنتجه Dio من
+  /// `FormData` فيصل الملف للخادم بنوعٍ خاطئ.
+  ///
+  /// [onProgress] للملفات الكبيرة — شريط رفعٍ صادق أهون من انتظار صامت.
+  Future<dynamic> postFile(
+    String path, {
+    required List<int> bytes,
+    required String fileName,
+    String field = 'file',
+    void Function(int sent, int total)? onProgress,
+  }) async {
+    final form = FormData.fromMap({
+      field: MultipartFile.fromBytes(bytes, filename: fileName),
+    });
+
+    final res = await _dio.post(
+      path,
+      data: form,
+      options: Options(contentType: 'multipart/form-data'),
+      onSendProgress: onProgress,
+    );
+    return _unwrap(res.data);
+  }
+
   Future<dynamic> put(String path, {dynamic data}) async {
     final res = await _dio.put(path, data: data);
     return _unwrap(res.data);
