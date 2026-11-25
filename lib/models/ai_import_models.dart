@@ -12,7 +12,11 @@ enum ImportStatus {
   ready(4),
   applying(5),
   applied(6),
-  failed(7);
+  failed(7),
+
+  /// أوقفها صاحبها — حالةٌ مستقلّة عن [failed] عمداً: الفشل عطلٌ يستحق
+  /// رسالةً، والإلغاء قرارٌ لا خطأ فيه.
+  cancelled(8);
 
   const ImportStatus(this.code);
   final int code;
@@ -283,6 +287,7 @@ class ImportJob {
     this.summary = const ImportSummary(),
     this.counts = const ImportCounts(),
     this.rows = const [],
+    this.createdOn,
   });
 
   final String jobId;
@@ -302,6 +307,13 @@ class ImportJob {
   final ImportCounts counts;
   final List<ImportRow> rows;
 
+  /// وقت إنشاء المهمة في الخادم — أساس عدّاد «كم مضى».
+  ///
+  /// لازمٌ لا زينة: ملفٌ بسبعمئة صف يُقسَّم دفعاتٍ كثيرة لكل منها نداء
+  /// وكيل، فيبقى التقدّم ثابتاً دقائق. وبلا عدّادٍ يرى المستخدم شاشةً
+  /// ساكنة فيظنّها معلّقة ويعيد الرفع — فتتراكم مهامٌ متوازية بلا داعٍ.
+  final DateTime? createdOn;
+
   factory ImportJob.fromJson(Map<String, dynamic> j) => ImportJob(
         jobId: j['jobId'] as String,
         fileName: j['fileName'] as String? ?? '',
@@ -318,7 +330,15 @@ class ImportJob {
             .whereType<Map<String, dynamic>>()
             .map(ImportRow.fromJson)
             .toList(),
+        createdOn: DateTime.tryParse(j['createdOn'] as String? ?? '')?.toLocal(),
       );
+
+  /// كم مضى على المهمة — يُحسب من وقت الخادم لا من فتح الشاشة، فيبقى
+  /// صحيحاً عند استئناف مهمةٍ بدأت قبل إغلاق التطبيق.
+  Duration? get elapsed {
+    final start = createdOn;
+    return start == null ? null : DateTime.now().difference(start);
+  }
 
   ImportJob copyWith({List<ImportRow>? rows}) => ImportJob(
         jobId: jobId,
@@ -333,6 +353,7 @@ class ImportJob {
         summary: summary,
         counts: counts,
         rows: rows ?? this.rows,
+        createdOn: createdOn,
       );
 }
 

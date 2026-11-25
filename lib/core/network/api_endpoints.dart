@@ -202,6 +202,8 @@ abstract final class ApiEndpoints {
   static const String whImport = '$_wh/medicines/import';
   static const String whImportActive = '$_wh/medicines/import/active';
   static String whImportById(String jobId) => '$_wh/medicines/import/$jobId';
+  static String whImportCancel(String jobId) =>
+      '$_wh/medicines/import/$jobId/cancel';
   static String whImportApply(String jobId) =>
       '$_wh/medicines/import/$jobId/apply';
 

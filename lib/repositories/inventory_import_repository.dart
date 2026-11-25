@@ -51,6 +51,17 @@ class InventoryImportRepository {
     return data is Map<String, dynamic> ? ImportJob.fromJson(data) : null;
   }
 
+  /// يوقف مهمة جارية.
+  ///
+  /// إلغاءٌ حقيقي لا إغلاقٌ للشاشة: الخادم يوسمها ملغاةً فلا تُستأنف،
+  /// ويقطع نداء الوكيل الجاري بدل انتظار انتهاء الدفعة. وهو آمنٌ بلا
+  /// تراجع لأن لا شيء يُكتب في «أدويتي» قبل خطوة التطبيق.
+  Future<ImportJob> cancel(String jobId) async {
+    final data = await _api.post(ApiEndpoints.whImportCancel(jobId))
+        as Map<String, dynamic>;
+    return ImportJob.fromJson(data);
+  }
+
   /// يكتب المختار في «أدويتي» ويُعيد ماذا أُضيف وماذا عُدِّل.
   ///
   /// الصفوف تُمرَّر صريحةً دائماً: لا يُكتب في مخزون أحدٍ ما لم يره ويوافق.

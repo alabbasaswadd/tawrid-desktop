@@ -120,6 +120,7 @@ class InventoryImportHub {
   void _onProgress(List<Object?>? args) {
     final data = _firstMap(args);
     if (data == null || _progress.isClosed) return;
+    _log.d('[ImportHub] تقدّم: ${data['activity']} (${data['done']}/${data['total']})');
     _progress.add(ImportProgressEvent.fromJson(data));
   }
 
