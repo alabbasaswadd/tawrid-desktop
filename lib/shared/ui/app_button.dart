@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:tawrid_app/app/theme/app_spacing.dart';
 import 'package:tawrid_app/app/theme/app_tokens_ext.dart';
 
+import 'app_icon.dart';
 import 'dots_loader.dart';
 
 enum AppButtonVariant { filled, tonal, outline, text, danger }
@@ -13,6 +14,7 @@ class AppButton extends StatelessWidget {
     required this.onPressed,
     this.variant = AppButtonVariant.filled,
     this.icon,
+    this.appIcon,
     this.loading = false,
     this.fullWidth = true,
     this.compact = false,
@@ -23,6 +25,11 @@ class AppButton extends StatelessWidget {
   final VoidCallback? onPressed;
   final AppButtonVariant variant;
   final IconData? icon;
+
+  /// أيقونة نظام التصميم (SVG من Figma) — المُفضَّلة في الواجهات الجديدة.
+  /// تسبق [icon] إن مُرِّرت كلتاهما، و[icon] باقية لمواضع الاستدعاء القديمة.
+  final AppIcons? appIcon;
+
   final bool loading;
   final bool fullWidth;
   // compact: يُصغّر الحشو والارتفاع للاستخدام داخل بطاقات القوائم.
@@ -41,11 +48,18 @@ class AppButton extends StatelessWidget {
     // محتوى الحالة العادية — يُبنى دائماً، ويُستعمل أثناء الانتظار شفافاً
     // ليحجز المقاس نفسه: الزرّ لا يقفز بين حالتيه ولا ينكمش حول ثلاث نقاط
     // فيبدو شريطاً عريضاً مسطّحاً.
-    final Widget label = icon != null
+    // أيقونة الزرّ: تُلوَّن صراحةً بلون مقدّمة النمط لأن AppIcon يقرأ
+    // IconTheme لا نمط الزرّ، فبلا تمريرٍ صريح تظهر بلونٍ مخالف للنصّ.
+    final double iconSize = compact ? 14 : 18;
+    final Widget? leadingIcon = appIcon != null
+        ? AppIcon(appIcon!, size: iconSize, color: spinnerColor)
+        : (icon != null ? Icon(icon, size: iconSize) : null);
+
+    final Widget label = leadingIcon != null
               ? Row(
                   mainAxisSize: MainAxisSize.min,
                   children: [
-                    Icon(icon, size: compact ? 14 : 18),
+                    leadingIcon,
                     SizedBox(width: compact ? 6 : 8),
                     Flexible(
                       child: Text(this.label,

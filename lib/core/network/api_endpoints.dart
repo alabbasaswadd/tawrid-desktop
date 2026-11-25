@@ -195,4 +195,17 @@ abstract final class ApiEndpoints {
   /// قناة الأحداث الفورية (SignalR) — مسار واحد للجهتين: الخادم يشتقّ
   /// المجموعة من التوكن، فلا حاجة إلى بادئة warehouse/ هنا.
   static const String conversationsHub = '$_ph/hubs/conversations';
+
+  // ── استيراد المخزون بالـ AI ────────────────────────────────────────────────
+  // الرفع يعود فوراً بمعرّف مهمة، والتقدّم يُبثّ على القناة، ثم تُراجَع
+  // الصفوف وتُطبَّق. لا شيء يُكتب في «أدويتي» قبل خطوة apply.
+  static const String whImport = '$_wh/medicines/import';
+  static const String whImportActive = '$_wh/medicines/import/active';
+  static String whImportById(String jobId) => '$_wh/medicines/import/$jobId';
+  static String whImportApply(String jobId) =>
+      '$_wh/medicines/import/$jobId/apply';
+
+  /// قناة تقدّم الاستيراد — منفصلة عن قناة المحادثات: تُفتح لشاشة واحدة
+  /// لدقائق، وإغلاقها لا يجوز أن يمسّ وصول الرسائل.
+  static const String inventoryImportsHub = '$_ph/hubs/inventory-imports';
 }
