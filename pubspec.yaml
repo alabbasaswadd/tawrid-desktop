@@ -47,8 +47,18 @@ dependencies:
   pdf: ^3.11.1
   printing: ^5.13.4
   url_launcher: ^6.3.3
-  firebase_core: ^5.1.0
-  firebase_messaging: ^17.0.1
+  # Firebase منزوع من نسخة سطح المكتب. firebase_messaging بلا تنفيذ
+  # لويندوز (ولذلك كان محروساً في الكود أصلاً)، لكن مجرّد وجود
+  # firebase_core يُدرِجه في قائمة إضافات ويندوز فيسحب CMake حزمة
+  # Firebase C++ SDK بحجم ٩١٦ ميغابايت ويترجمها — ثمنٌ كامل مقابل ميزةٍ
+  # معطَّلة على هذه المنصّة. راجع lib/core/notifications/push_service.dart.
+  #
+  # لإعادة بناء نسخة محمولة (أندرويد/iOS) أو ويب، أعِد تفعيل السطرين
+  # واسترجع push_service.dart وmain.dart وfirebase_options.dart:
+  #   git checkout -- pubspec.yaml lib/main.dart \
+  #     lib/core/notifications/push_service.dart lib/firebase_options.dart
+  # firebase_core: ^5.1.0
+  # firebase_messaging: ^17.0.1
   geolocator: ^14.0.2
   signalr_netcore: ^1.4.4
   flutter_local_notifications: 19.3.1
