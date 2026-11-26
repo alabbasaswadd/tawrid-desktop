@@ -1,3 +1,5 @@
+import 'package:tawrid_app/models/sales_offer_models.dart';
+
 // نماذج استيراد المخزون بالـ AI — مطابقة لعقد
 // `tawrid-api/warehouse/medicines/import` في الباكند.
 //
@@ -139,6 +141,13 @@ class ImportRow {
     this.previousPrice,
     this.outcome = ImportOutcome.pending,
     this.outcomeMessage,
+    this.company,
+    this.unit,
+    this.discountPercentage,
+    this.bonusBuyQuantity,
+    this.bonusFreeQuantity,
+    this.expiryDate,
+    this.isOfferItem = false,
   });
 
   final String id;
@@ -166,6 +175,31 @@ class ImportRow {
 
   final ImportOutcome outcome;
   final String? outcomeMessage;
+
+  // ── الشقّ التجاري — ما يجعل الصفّ بند عرضٍ لا مجرّد سطر مخزون ────────
+  /// الشركة المصنّعة أو المورّدة — أساس تجميع بنود العرض الواحد.
+  final String? company;
+
+  final String? unit;
+  final double? discountPercentage;
+
+  /// «اشترِ [bonusBuyQuantity] فتأخذ [bonusFreeQuantity] مجاناً».
+  final double? bonusBuyQuantity;
+  final double? bonusFreeQuantity;
+
+  final DateTime? expiryDate;
+
+  /// هل يحمل الصفّ شرطاً تجارياً؟ يقرّره الخادم من الخصم والبونص.
+  final bool isOfferItem;
+
+  /// نصّ البونص للعرض: «١٠+١».
+  String? get bonusLabel =>
+      bonusBuyQuantity != null && bonusFreeQuantity != null
+          ? '${_num(bonusBuyQuantity!)}+${_num(bonusFreeQuantity!)}'
+          : null;
+
+  static String _num(double v) =>
+      v == v.roundToDouble() ? v.toStringAsFixed(0) : v.toString();
 
   /// هل فيه قرارٌ يُتَّخذ؟ غير الموجود لا يمكن استيراده أصلاً.
   bool get isActionable =>
@@ -195,11 +229,23 @@ class ImportRow {
         previousPrice: (j['previousPrice'] as num?)?.toDouble(),
         outcome: ImportOutcome.fromCode((j['outcome'] as num?)?.toInt()),
         outcomeMessage: _str(j['outcomeMessage']),
+        company: _str(j['company']),
+        unit: _str(j['unit']),
+        discountPercentage: (j['discountPercentage'] as num?)?.toDouble(),
+        bonusBuyQuantity: (j['bonusBuyQuantity'] as num?)?.toDouble(),
+        bonusFreeQuantity: (j['bonusFreeQuantity'] as num?)?.toDouble(),
+        expiryDate: DateTime.tryParse(j['expiryDate'] as String? ?? '')?.toLocal(),
+        isOfferItem: j['isOfferItem'] as bool? ?? false,
       );
 
+  /// [clearPrice] يُفرِّغ السعر صراحةً.
+  ///
+  /// لازمٌ لأن `price ?? this.price` لا يُفرِّق بين «لا تُغيّره» و«اجعله
+  /// فارغاً»، والفارغ معنىً مقصود هنا: سعرٌ يُشتقّ تلقائياً من الكتالوج.
   ImportRow copyWith({
     bool? selected,
     double? price,
+    bool clearPrice = false,
     ImportCandidate? matched,
     ImportMatch? matchStatus,
   }) =>
@@ -212,7 +258,7 @@ class ImportRow {
         form: form,
         manufacturer: manufacturer,
         quantity: quantity,
-        price: price ?? this.price,
+        price: clearPrice ? null : (price ?? this.price),
         confidence: confidence,
         note: note,
         matchStatus: matchStatus ?? this.matchStatus,
@@ -222,6 +268,13 @@ class ImportRow {
         previousPrice: previousPrice,
         outcome: outcome,
         outcomeMessage: outcomeMessage,
+        company: company,
+        unit: unit,
+        discountPercentage: discountPercentage,
+        bonusBuyQuantity: bonusBuyQuantity,
+        bonusFreeQuantity: bonusFreeQuantity,
+        expiryDate: expiryDate,
+        isOfferItem: isOfferItem,
       );
 }
 
@@ -447,6 +500,83 @@ class ImportFailure {
       );
 }
 
+/// عرضٌ أُنشئ من بنود شركةٍ في الملف.
+class ImportCreatedOffer {
+  const ImportCreatedOffer({
+    required this.offerId,
+    required this.company,
+    required this.title,
+    required this.itemCount,
+  });
+
+  final String offerId;
+  final String company;
+  final String title;
+  final int itemCount;
+
+  factory ImportCreatedOffer.fromJson(Map<String, dynamic> j) =>
+      ImportCreatedOffer(
+        offerId: j['offerId'] as String? ?? '',
+        company: j['company'] as String? ?? '',
+        title: j['title'] as String? ?? '',
+        itemCount: (j['itemCount'] as num?)?.toInt() ?? 0,
+      );
+}
+
+/// عرضٌ تعذّر إنشاؤه — باسم شركته وسببه.
+class ImportOfferFailure {
+  const ImportOfferFailure({required this.company, required this.message});
+
+  final String company;
+  final String message;
+
+  factory ImportOfferFailure.fromJson(Map<String, dynamic> j) =>
+      ImportOfferFailure(
+        company: j['company'] as String? ?? '',
+        message: j['message'] as String? ?? '',
+      );
+}
+
+/// ما يُرسَل لإنشاء عرضٍ من بنود شركة.
+///
+/// الاستهداف والتواريخ تأتي من المستخدم لا من الملف: ملفُّ أسعارٍ لا
+/// يحمل مناطقَ ولا مدداً، وهي شرطُ إنشاء العرض في الخادم.
+class ImportOfferPlan {
+  const ImportOfferPlan({
+    required this.company,
+    required this.title,
+    required this.startsAt,
+    required this.targetRegions,
+    this.expiresAt,
+    this.isPublicInRegion = true,
+    this.description,
+  });
+
+  final String company;
+  final String title;
+  final DateTime startsAt;
+  final DateTime? expiresAt;
+  final bool isPublicInRegion;
+  final List<TargetRegion> targetRegions;
+  final String? description;
+
+  Map<String, dynamic> toJson() => {
+        'company': company,
+        'title': title,
+        'startsAt': startsAt.toUtc().toIso8601String(),
+        if (expiresAt != null)
+          'expiresAt': expiresAt!.toUtc().toIso8601String(),
+        'isPublicInRegion': isPublicInRegion,
+        'targetRegions': targetRegions
+            .map((r) => {
+                  'governorate': r.governorate,
+                  if (r.city != null) 'city': r.city,
+                })
+            .toList(),
+        if (description != null) 'description': description,
+      };
+}
+
 /// تقرير التطبيق: ماذا أُضيف وماذا عُدِّل وماذا تعذّر.
 class ImportReport {
   const ImportReport({
@@ -455,6 +585,8 @@ class ImportReport {
     this.modified = const [],
     this.failed = const [],
     this.skippedCount = 0,
+    this.offers = const [],
+    this.offerFailures = const [],
   });
 
   final String jobId;
@@ -463,8 +595,15 @@ class ImportReport {
   final List<ImportFailure> failed;
   final int skippedCount;
 
+  /// العروض التي أُنشئت مسوّدةً — واحدٌ لكل شركة أقرّها المستخدم.
+  final List<ImportCreatedOffer> offers;
+
+  /// عروضٌ تعذّرت — تُفصَل عن [failed] لأن إجراءها مختلف: تلك أصنافٌ
+  /// يُعاد استيرادها، وهذه عروضٌ تُنشأ من شاشة العروض.
+  final List<ImportOfferFailure> offerFailures;
+
   int get total => added.length + modified.length;
-  bool get hasFailures => failed.isNotEmpty;
+  bool get hasFailures => failed.isNotEmpty || offerFailures.isNotEmpty;
 
   factory ImportReport.fromJson(Map<String, dynamic> j) => ImportReport(
         jobId: j['jobId'] as String,
@@ -475,6 +614,14 @@ class ImportReport {
             .map(ImportFailure.fromJson)
             .toList(),
         skippedCount: (j['skippedCount'] as num?)?.toInt() ?? 0,
+        offers: ((j['offers'] as List?) ?? const [])
+            .whereType<Map<String, dynamic>>()
+            .map(ImportCreatedOffer.fromJson)
+            .toList(),
+        offerFailures: ((j['offerFailures'] as List?) ?? const [])
+            .whereType<Map<String, dynamic>>()
+            .map(ImportOfferFailure.fromJson)
+            .toList(),
       );
 
   static List<ImportAppliedItem> _items(dynamic value) =>

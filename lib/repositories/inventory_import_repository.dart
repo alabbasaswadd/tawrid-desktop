@@ -65,11 +65,14 @@ class InventoryImportRepository {
   /// يكتب المختار في «أدويتي» ويُعيد ماذا أُضيف وماذا عُدِّل.
   ///
   /// الصفوف تُمرَّر صريحةً دائماً: لا يُكتب في مخزون أحدٍ ما لم يره ويوافق.
+  /// [offers] عروضٌ تُنشأ مسوّدةً من بنود الملف، واحدٌ لكل شركة أقرّها
+  /// المستخدم. فارغةً لا يُنشأ عرض — وهو الوضع الطبيعي لملف جردٍ صرف.
   Future<ImportReport> apply(
     String jobId, {
     required List<String> selectedRowIds,
     Map<String, double?> priceOverrides = const {},
     Map<String, String> catalogOverrides = const {},
+    List<ImportOfferPlan> offers = const [],
   }) async {
     final data = await _api.post(
       ApiEndpoints.whImportApply(jobId),
@@ -77,6 +80,8 @@ class InventoryImportRepository {
         'selectedRowIds': selectedRowIds,
         if (priceOverrides.isNotEmpty) 'priceOverrides': priceOverrides,
         if (catalogOverrides.isNotEmpty) 'catalogOverrides': catalogOverrides,
+        if (offers.isNotEmpty)
+          'offers': offers.map((o) => o.toJson()).toList(),
       },
     ) as Map<String, dynamic>;
 

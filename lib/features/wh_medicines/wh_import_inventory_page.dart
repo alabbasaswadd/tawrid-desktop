@@ -7,6 +7,7 @@ import 'package:tawrid_app/app/theme/app_spacing.dart';
 import 'package:tawrid_app/app/theme/app_tokens_ext.dart';
 import 'package:tawrid_app/core/network/api_exception.dart';
 import 'package:tawrid_app/core/realtime/inventory_import_hub.dart';
+import 'package:tawrid_app/features/wh_medicines/import_offer_setup_page.dart';
 import 'package:tawrid_app/models/ai_import_models.dart';
 import 'package:tawrid_app/repositories/inventory_import_repository.dart';
 import 'package:tawrid_app/shared/ui/ui.dart';
@@ -358,32 +359,41 @@ class _WhImportInventoryPageState extends ConsumerState<WhImportInventoryPage> {
     final price = value.isEmpty ? null : double.tryParse(value);
     if (value.isNotEmpty && price == null) return; // نصّ ليس رقماً — يُهمَل
 
+    // copyWith لا بناءٌ يدوي: الصفّ صار يحمل شركةً وخصماً وبونصاً
+    // وصلاحية، وكلّها كانت تسقط صامتةً عند كل تعديل سعر.
     final next = [..._rows];
-    next[index] = ImportRow(
-      id: row.id,
-      rowNumber: row.rowNumber,
-      rawCells: row.rawCells,
-      name: row.name,
-      strength: row.strength,
-      form: row.form,
-      manufacturer: row.manufacturer,
-      quantity: row.quantity,
-      price: price,
-      confidence: row.confidence,
-      note: row.note,
-      matchStatus: row.matchStatus,
-      selected: true,
-      matched: row.matched,
-      candidates: row.candidates,
-      previousPrice: row.previousPrice,
-      outcome: row.outcome,
-      outcomeMessage: row.outcomeMessage,
-    );
+    next[index] = row.copyWith(price: price, selected: true, clearPrice: price == null);
 
     setState(() {
       _rows = next;
       _priceOverrides[row.id] = price;
     });
+  }
+
+  /// بنود العرض المحدَّدة، مجموعةً بالشركة.
+  ///
+  /// الشركة مفتاح التجميع لأنها وحدة التفاوض في السوق: المستودع يتّفق
+  /// مع شركةٍ على شروطٍ فتسري على أصنافها، لا على صنفٍ صنف.
+  List<ImportOfferGroup> get _offerGroups {
+    final byCompany = <String, List<ImportRow>>{};
+
+    for (final row in _rows) {
+      if (!row.isOfferItem || !row.selected || !row.isActionable) continue;
+      byCompany.putIfAbsent(row.company?.trim() ?? '', () => []).add(row);
+    }
+
+    final groups = byCompany.entries
+        .map((e) => ImportOfferGroup(company: e.key, rows: e.value))
+        .toList();
+
+    // الأكثر بنوداً أولاً، والمجهولة آخراً: هي الأقلّ إفادةً وأقربها
+    // إلى أن تُترك بلا عرض.
+    groups.sort((a, b) {
+      if (a.isUnnamed != b.isUnnamed) return a.isUnnamed ? 1 : -1;
+      return b.rows.length.compareTo(a.rows.length);
+    });
+
+    return groups;
   }
 
   Future<void> _apply() async {
@@ -395,6 +405,25 @@ class _WhImportInventoryPageState extends ConsumerState<WhImportInventoryPage> {
         .map((r) => r.id)
         .toList();
     if (selected.isEmpty) return;
+
+    // ── خطوة العروض ───────────────────────────────────────────────────
+    // تظهر متى حمل المحدَّد شرطاً تجارياً، وتُتخطّى لملف الجرد الصرف:
+    // لا معنى لسؤال عن مناطقَ ومُددٍ لملفٍ لا عرض فيه.
+    var offers = const <ImportOfferPlan>[];
+    final groups = _offerGroups;
+
+    if (groups.isNotEmpty) {
+      final chosen = await Navigator.of(context).push<List<ImportOfferPlan>>(
+        MaterialPageRoute(
+          builder: (_) => ImportOfferSetupPage(groups: groups),
+        ),
+      );
+
+      // العودة بلا نتيجة (زرّ الرجوع) إلغاءٌ للمزامنة كلها لا مضيٌّ
+      // بلا عروض: المستخدم تراجع، ولم يقل «زامن المخزون وحده».
+      if (chosen == null || !mounted) return;
+      offers = chosen;
+    }
 
     setState(() {
       _applying = true;
@@ -412,6 +441,7 @@ class _WhImportInventoryPageState extends ConsumerState<WhImportInventoryPage> {
                 selectedRowIds: selected,
                 priceOverrides: _priceOverrides,
                 catalogOverrides: _catalogOverrides,
+                offers: offers,
               );
       if (!mounted) return;
       setState(() {
@@ -1568,6 +1598,7 @@ class _SyncItemTile extends StatelessWidget {
 /// الكتالوج «غير موجود».
 enum _RowFilter {
   all('الكل'),
+  offers('بنود عرض'),
   newItem('جديد'),
   priceUpdate('تحديث سعر'),
   needsConfirm('يلزم تأكيد'),
@@ -1578,6 +1609,11 @@ enum _RowFilter {
 
   bool matches(ImportRow row) => switch (this) {
         _RowFilter.all => true,
+
+        // «بنود عرض» تقطع التصنيف الآخر لا تُجاوره: الصفّ بخصمٍ قد يكون
+        // جديداً أو تحديثَ سعر في آن. ولذلك لا تُحسَب في قسمة الأربعة،
+        // وتُعرَض وحدها مجموعةً بالشركة.
+        _RowFilter.offers => row.isOfferItem,
         _RowFilter.newItem => row.matchStatus == ImportMatch.matched,
         _RowFilter.priceUpdate => row.matchStatus == ImportMatch.owned,
         _RowFilter.needsConfirm => row.matchStatus == ImportMatch.ambiguous,
@@ -1586,6 +1622,7 @@ enum _RowFilter {
 
   StatusTone get tone => switch (this) {
         _RowFilter.all => StatusTone.neutral,
+        _RowFilter.offers => StatusTone.brand,
         _RowFilter.newItem => StatusTone.success,
         _RowFilter.priceUpdate => StatusTone.info,
         _RowFilter.needsConfirm => StatusTone.warning,
@@ -1638,6 +1675,10 @@ class _ReviewViewState extends State<_ReviewView> {
             ? rows.length
             : rows.where(f.matches).length,
     };
+
+    // ترتيب العرض حين تُفلتَر بنود العرض: مجموعةً بالشركة، والأكثر
+    // بنوداً أولاً — فيرى المستخدم العرض الذي سيُنشأ كما سيُنشأ.
+    final grouped = _filter == _RowFilter.offers;
 
     // الصفوف المعروضة مع فهارسها الأصلية: الفلترة تُغيّر ترتيب العرض،
     // والنداءات تُشير إلى مواضع في القائمة الكاملة — فلو مُرِّر فهرس
@@ -1709,6 +1750,24 @@ class _ReviewViewState extends State<_ReviewView> {
                   description: 'جرّب تصنيفاً آخر أو اعرض الكل',
                   appIcon: AppIcons.pill,
                 )
+              else if (grouped)
+                for (final group in _groupByCompany(rows, visible)) ...[
+                  _CompanyHeader(
+                    company: group.key,
+                    count: group.value.length,
+                  ),
+                  for (final i in group.value)
+                    Padding(
+                      key: ValueKey(rows[i].id),
+                      padding: const EdgeInsets.only(bottom: AppSpacing.sm),
+                      child: _MatchRow(
+                        row: rows[i],
+                        onToggle: () => widget.onToggle(i),
+                        onPickCandidate: () => widget.onPickCandidate(i),
+                        onEditPrice: () => widget.onEditPrice(i),
+                      ),
+                    ),
+                ]
               else
                 for (final i in visible)
                   Padding(
@@ -1800,6 +1859,65 @@ class _Appear extends StatelessWidget {
   }
 }
 
+/// يجمع الفهارس المعروضة بالشركة، الأكثر بنوداً أولاً.
+///
+/// الشركة هي وحدة التجميع لأنها وحدة التفاوض: المستودع يتّفق مع شركةٍ
+/// على شروطٍ فتسري على أصنافها، والعرض يُنشأ لها لا لصنفٍ منفرد. فرؤية
+/// البنود مجموعةً هنا هي رؤيةُ العروض قبل إنشائها.
+List<MapEntry<String, List<int>>> _groupByCompany(
+    List<ImportRow> rows, List<int> visible) {
+  final byCompany = <String, List<int>>{};
+
+  for (final i in visible) {
+    final company = rows[i].company?.trim() ?? '';
+    byCompany.putIfAbsent(company.isEmpty ? 'بلا شركة' : company, () => [])
+        .add(i);
+  }
+
+  final groups = byCompany.entries.toList();
+
+  // «بلا شركة» آخراً: لا عرض يُنشأ لها غالباً، فلا تتصدّر ما يُنشأ.
+  groups.sort((a, b) {
+    final aUnnamed = a.key == 'بلا شركة';
+    final bUnnamed = b.key == 'بلا شركة';
+    if (aUnnamed != bUnnamed) return aUnnamed ? 1 : -1;
+    return b.value.length.compareTo(a.value.length);
+  });
+
+  return groups;
+}
+
+/// ترويسة مجموعة شركة داخل قائمة المراجعة.
+class _CompanyHeader extends StatelessWidget {
+  const _CompanyHeader({required this.company, required this.count});
+
+  final String company;
+  final int count;
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = context.colors;
+
+    return Padding(
+      padding: const EdgeInsets.only(
+          top: AppSpacing.sm, bottom: AppSpacing.sm),
+      child: Row(
+        children: [
+          AppIcon(AppIcons.warehouse, size: 16, color: cs.primary),
+          const SizedBox(width: AppSpacing.sm),
+          Expanded(
+            child: Text(company,
+                style: context.text.labelLarge?.copyWith(color: cs.primary),
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis),
+          ),
+          StatusBadge(label: '$count بنداً', tone: StatusTone.brand),
+        ],
+      ),
+    );
+  }
+}
+
 /// لوحة التصنيفات — عدّادٌ وفلترٌ في بطاقةٍ واحدة.
 class _FilterBoard extends StatelessWidget {
   const _FilterBoard({
@@ -1817,6 +1935,9 @@ class _FilterBoard extends StatelessWidget {
     // الخانات الفارغة تُطرح: «يلزم تأكيد: ٠» ليس خبراً، ووجوده يُزاحم
     // ما يعني المستخدم. و«الكل» تبقى دائماً لأنها طريق العودة.
     final shown = [
+      // بنود العرض أولاً حين توجد: هي الخبر الجديد في الملف، وهي ما
+      // يقود إلى خطوة إنشاء العروض.
+      _RowFilter.offers,
       _RowFilter.newItem,
       _RowFilter.priceUpdate,
       _RowFilter.needsConfirm,
@@ -1878,6 +1999,7 @@ class _FilterBoard extends StatelessWidget {
   }
 
   static AppIcons _iconFor(_RowFilter f) => switch (f) {
+        _RowFilter.offers => AppIcons.gift,
         _RowFilter.newItem => AppIcons.plus,
         _RowFilter.priceUpdate => AppIcons.tag,
         _RowFilter.needsConfirm => AppIcons.alertTriangle,
@@ -2205,14 +2327,31 @@ class _MatchRow extends StatelessWidget {
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis),
                 const SizedBox(height: AppSpacing.xs),
-                Row(
+                // Wrap لا Row: الشروط التجارية تُضاف إلى شارة الحالة،
+                // وصفٌّ بخصمٍ وبونصٍ ومرشّحين يتجاوز عرض السطر فيفيض.
+                Wrap(
+                  spacing: AppSpacing.sm,
+                  runSpacing: AppSpacing.xs,
+                  crossAxisAlignment: WrapCrossAlignment.center,
                   children: [
                     StatusBadge(label: label, tone: tone),
-                    if (row.candidates.length > 1) ...[
-                      const SizedBox(width: AppSpacing.sm),
+
+                    // ما يجعل الصفّ بند عرض — يُعرَض على الصفّ نفسه لا
+                    // في شاشةٍ أخرى: المستخدم يُقرّر ضمَّه إلى العرض وهو
+                    // يراه، لا بعد أن ينتقل.
+                    if ((row.discountPercentage ?? 0) > 0)
+                      StatusBadge(
+                        label: 'خصم ${_num(row.discountPercentage!)}٪',
+                        tone: StatusTone.info,
+                      ),
+                    if (row.bonusLabel != null)
+                      BonusBadge(label: 'بونص ${row.bonusLabel}'),
+
+                    if (row.candidates.length > 1)
                       GestureDetector(
                         onTap: onPickCandidate,
                         child: Row(
+                          mainAxisSize: MainAxisSize.min,
                           children: [
                             AppIcon(AppIcons.chevronForwardRtl,
                                 size: 12, color: context.colors.primary),
@@ -2223,7 +2362,6 @@ class _MatchRow extends StatelessWidget {
                           ],
                         ),
                       ),
-                    ],
                   ],
                 ),
                 if (row.note != null) ...[
@@ -2430,6 +2568,64 @@ class _ReportView extends StatelessWidget {
             tone: StatusTone.info,
             items: report.modified,
             showPrevious: true,
+          ),
+        ],
+
+        // ── العروض المُنشأة ──────────────────────────────────────────
+        // تُعرَض قبل الأعطال لأنها الخبر الأهمّ: شيءٌ جديد صار موجوداً،
+        // ويُقال صراحةً إنه مسوّدة حتى لا يُظنّ أنه بلغ الصيدليات.
+        if (report.offers.isNotEmpty) ...[
+          const SizedBox(height: AppSpacing.md),
+          AppCard(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    AppIcon(AppIcons.gift, size: 18, color: context.colors.primary),
+                    const SizedBox(width: AppSpacing.sm),
+                    Text('أُنشئ ${report.offers.length} عرضاً',
+                        style: context.text.labelLarge),
+                  ],
+                ),
+                const SizedBox(height: AppSpacing.sm),
+                for (final o in report.offers)
+                  Padding(
+                    padding: const EdgeInsets.only(bottom: AppSpacing.xs),
+                    child: Row(
+                      children: [
+                        Expanded(
+                          child: Text(o.title,
+                              style: context.text.bodySmall,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis),
+                        ),
+                        StatusBadge(
+                          label: '${o.itemCount} بنداً',
+                          tone: StatusTone.neutral,
+                        ),
+                      ],
+                    ),
+                  ),
+                const SizedBox(height: AppSpacing.xs),
+                Text(
+                  'كلّها «مسوّدة» — افتح شاشة العروض لمراجعتها ونشرها.',
+                  style: context.text.labelSmall?.copyWith(color: tk.hint),
+                ),
+              ],
+            ),
+          ),
+        ],
+
+        if (report.offerFailures.isNotEmpty) ...[
+          const SizedBox(height: AppSpacing.md),
+          _NoticeCard(
+            appIcon: AppIcons.alertTriangle,
+            tone: StatusTone.warning,
+            title: 'تعذّر إنشاء ${report.offerFailures.length} عرضاً',
+            body: report.offerFailures
+                .map((f) => '${f.company}: ${f.message}')
+                .join('\n'),
           ),
         ],
 
