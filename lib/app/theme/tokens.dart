@@ -88,6 +88,18 @@ abstract final class AppMotion {
 // عرض المحتوى الأقصى على الشاشات العريضة (توسيط بدل تمدّد قبيح).
 abstract final class AppBreakpoints {
   static const double tablet = 720;
+  static const double desktop = 1100;
+  static const double wide = 1500;
+
+  /// عرض النماذج الأقصى (تسجيل الدخول والتسجيل) — عمودٌ يُقرأ لا يُمسح.
   static const double maxContentWidth = 640;
+
+  /// عرض الشاشات الممتلئة الأقصى (القوائم والشبكات).
+  ///
+  /// منفصلٌ عن [maxContentWidth] لأن حاجتهما متعاكسة: النموذج يضيق ليُقرأ،
+  /// والجدول يتّسع ليُمسح. وحصرُ الاثنين في ٦٤٠ بكسل هو ما كان يجعل
+  /// التطبيق يبدو هاتفاً مكبَّراً على شاشةٍ عريضة.
+  static const double maxBoardWidth = 1680;
+
   static const double desktopSideNavWidth = 220;
 }

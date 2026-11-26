@@ -34,6 +34,7 @@ export 'offer_item_row.dart';
 export 'order_card.dart';
 export 'quantity_stepper.dart';
 export 'region_rows.dart';
+export 'adaptive_card_grid.dart';
 export 'responsive.dart';
 export 'status_badge.dart';
 export 'summary_counter.dart';

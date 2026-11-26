@@ -150,7 +150,12 @@ class _ConversationsPageState extends ConsumerState<ConversationsPage> {
       );
     }
 
-    return ListView.separated(
+    // المحادثات عمودٌ يُقرأ لا شبكةٌ تُمسح — فتُحدّ بعرضٍ معقول بدل أن
+    // تمتدّ بعرض المكتب كلّه، فيصير الاسم في أقصى اليمين وزمنُه في أقصى
+    // اليسار وبينهما شبرٌ فارغ.
+    return BoardContent(
+      maxWidth: 980,
+      child: ListView.separated(
       itemCount: _conversations.length,
       separatorBuilder: (_, _) => const Divider(height: 1, indent: 76),
       itemBuilder: (_, i) {
@@ -179,6 +184,7 @@ class _ConversationsPageState extends ConsumerState<ConversationsPage> {
           },
         );
       },
+      ),
     );
   }
 }

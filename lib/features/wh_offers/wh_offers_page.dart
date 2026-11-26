@@ -13,6 +13,7 @@ import 'package:tawrid_app/shared/widgets/offer_summary_card.dart';
 import 'package:tawrid_app/shared/utils/relative_time.dart';
 import 'package:tawrid_app/shared/widgets/app_states.dart';
 import 'package:tawrid_app/shared/widgets/chat_sheet.dart';
+import 'package:tawrid_app/core/state/inventory_revision.dart';
 
 // شرائح عروض المستودع (Figma): الكل، منشور، مسودة، متوقف، منتهٍ.
 enum _OffersTab {
@@ -184,6 +185,10 @@ class _WhOffersPageState extends ConsumerState<WhOffersPage> {
 
   @override
   Widget build(BuildContext context) {
+    // مخزونٌ تغيّر من شاشة الاستيراد — تُعاد القائمة بهدوء بلا مؤشّر
+    // تحميلٍ يقطع ما يقرأه المستخدم.
+    ref.listen(inventoryRevisionProvider, (_, _) => _load(silent: true));
+
     return Scaffold(
       appBar: AppBar(
         title: const Text('عروضي'),
@@ -260,14 +265,18 @@ class _WhOffersPageState extends ConsumerState<WhOffersPage> {
 
         // سطر الحالة: السارية، ثم تحذير ما يقارب على الانتهاء.
         Padding(
-          padding: const EdgeInsets.fromLTRB(
-              AppSpacing.page, AppSpacing.md, AppSpacing.page, AppSpacing.sm),
+          padding: EdgeInsets.fromLTRB(context.pageGutter, AppSpacing.md,
+              context.pageGutter, AppSpacing.sm),
           child: Align(
             alignment: AlignmentDirectional.centerStart,
             child: Text(
               [
                 '${_active.length} ${_active.length == 1 ? 'عرض سارٍ' : 'عرضاً سارياً'}',
                 if (_standingActive > 0) '$_standingActive ثابت',
+                // المسوّدات تُذكر في السطر نفسه: عرضٌ أُنشئ ولم يُنشَر
+                // خبرٌ يخصّ صاحبه، وإخفاؤه خلف تبويبٍ يجعل الاستيراد
+                // يبدو كأنه لم يُنتج شيئاً.
+                if (_drafts > 0) '$_drafts مسوّدة لم تُنشَر',
                 if (expiring > 0)
                   '$expiring ${expiring == 1 ? 'ينتهي قريباً' : 'تنتهي قريباً'}',
               ].join(' · '),
@@ -290,17 +299,24 @@ class _WhOffersPageState extends ConsumerState<WhOffersPage> {
                     ),
                   ],
                 )
-              : ListView.separated(
-                  padding: const EdgeInsets.fromLTRB(
-                      AppSpacing.page, 0, AppSpacing.page, 88),
+              : AdaptiveCardGrid(
+                  padding: EdgeInsets.fromLTRB(
+                      context.pageGutter, 0, context.pageGutter, 88),
                   itemCount: shown.length,
-                  separatorBuilder: (_, _) => const SizedBox(height: AppSpacing.md),
+                  tileHeight: 210,
+                  minTileWidth: 400,
+                  maxColumns: 4,
                   itemBuilder: (_, i) => _card(shown[i]),
                 ),
         ),
       ],
     );
   }
+
+  int get _drafts =>
+      (_offers ?? const <SalesOfferSummary>[])
+          .where((o) => o.status == SalesOfferStatus.draft)
+          .length;
 
   Widget _card(SalesOfferSummary o) {
     // العرض الثابت لا يوشك على الانتهاء — لا تاريخ له.

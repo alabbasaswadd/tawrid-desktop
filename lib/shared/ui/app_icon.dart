@@ -34,7 +34,12 @@ enum AppIcons {
   shoppingCart('shopping_cart'),
   logOut('log_out'),
   messageSquare('message_square'),
-  info('info');
+  info('info'),
+
+  // أيقونات سطح المكتب — استيراد الملفات وتبديل العرض.
+  fileImport('file_import'),
+  layoutGrid('layout_grid'),
+  listRows('list_rows');
 
   const AppIcons(this._name);
   final String _name;

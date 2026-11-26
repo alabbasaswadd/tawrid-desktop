@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:go_router/go_router.dart';
+import 'package:tawrid_app/app/router/routes.dart';
 import 'package:tawrid_app/app/theme/app_spacing.dart';
 import 'package:tawrid_app/app/theme/app_tokens_ext.dart';
 import 'package:tawrid_app/models/ai_import_models.dart';
@@ -151,8 +153,19 @@ class _ImportOfferSetupPageState extends ConsumerState<ImportOfferSetupPage> {
     });
   }
 
+  /// لا مناطق تغطيةٍ للمستودع أصلاً — لا شيء يُختار منه.
+  ///
+  /// الفرق بينها وبين «لم يختر بعد» هو الفرق بين طريقٍ مسدود وخطوةٍ
+  /// ناقصة: المنتقي يعرض مناطق تغطية المستودع وحدها، فإن كانت فارغة
+  /// بقي فارغاً مهما فعل المستخدم. وقولُ «اختر منطقةً» حينها يُحمّله
+  /// ذنب شيءٍ لا يملكه — ويتركه أمام شاشةٍ لا مخرج منها.
+  bool _noCoverage = false;
+
   String? get _blocker {
     if (_enabled.isEmpty) return 'اختر شركةً واحدة على الأقل';
+    if (_noCoverage) {
+      return 'مستودعك بلا مناطق تغطية — حدّدها أولاً لتُنشأ العروض';
+    }
     if (_regions.isEmpty) return 'اختر منطقةً واحدة على الأقل';
 
     for (final company in _enabled) {
@@ -198,11 +211,20 @@ class _ImportOfferSetupPageState extends ConsumerState<ImportOfferSetupPage> {
     });
     final served = ref.watch(myServiceGovernoratesProvider).value;
     if (served != null && served.isNotEmpty) _seedRegions(served);
+    _noCoverage = served != null && served.isEmpty;
 
     return Scaffold(
       appBar: const InnerTopBar(title: 'إعداد العروض'),
       body: Column(
         children: [
+          if (_noCoverage)
+            Padding(
+              padding: const EdgeInsets.fromLTRB(AppSpacing.page,
+                  AppSpacing.md, AppSpacing.page, 0),
+              child: _NoCoverageNotice(
+                onFix: () => context.push(TRoutes.whServiceAreas),
+              ),
+            ),
           _TargetingHeader(
             regions: _regions,
             onRegionsChanged: (v) => setState(() {
@@ -311,6 +333,59 @@ class _ImportOfferSetupPageState extends ConsumerState<ImportOfferSetupPage> {
                   ),
                 ],
               ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// لافتةٌ تقول إن المستودع بلا تغطية، وتدلّ على موضع ضبطها.
+class _NoCoverageNotice extends StatelessWidget {
+  const _NoCoverageNotice({required this.onFix});
+  final VoidCallback onFix;
+
+  @override
+  Widget build(BuildContext context) {
+    final tk = context.tokens;
+
+    return Container(
+      padding: const EdgeInsets.all(AppSpacing.md),
+      decoration: BoxDecoration(
+        color: tk.warningSurface,
+        borderRadius: BorderRadius.circular(AppRadius.lg),
+        border: Border.all(color: tk.warning.withValues(alpha: 0.35)),
+      ),
+      child: Row(
+        children: [
+          AppIcon(AppIcons.alertTriangle, size: 20, color: tk.warning),
+          const SizedBox(width: AppSpacing.sm),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text('مستودعك بلا مناطق تغطية',
+                    style: context.text.labelMedium
+                        ?.copyWith(color: tk.warning)),
+                const SizedBox(height: 2),
+                Text(
+                  'العرض يُستهدَف بمناطق، ولا يُعرَض هنا إلا ما يخدمه '
+                  'مستودعك. حدّد تغطيتك ثم عُد — أو تابع المزامنة بلا عروض '
+                  'وأنشئها لاحقاً.',
+                  style: context.text.bodySmall,
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(width: AppSpacing.md),
+          SizedBox(
+            width: 180,
+            child: AppButton(
+              label: 'تحديد مناطق التغطية',
+              variant: AppButtonVariant.outline,
+              appIcon: AppIcons.mapPin,
+              onPressed: onFix,
             ),
           ),
         ],

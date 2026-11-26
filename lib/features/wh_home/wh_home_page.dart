@@ -91,6 +91,14 @@ class _WhHomePageState extends ConsumerState<WhHomePage> {
   List<SalesOfferSummary> get _activeOffers =>
       _offers.where((o) => o.status == SalesOfferStatus.active).toList();
 
+  /// العروض المُنشأة ولم تُنشَر بعد — أكثرها يأتي من الاستيراد.
+  ///
+  /// كانت تختفي من الرئيسية تماماً: العدّاد يحصي السارية وحدها، فمستودعٌ
+  /// استورد ملفاً وأنشأ منه ثلاثة عروضٍ يقرأ «٠ عرضاً سارياً» فيظنّ أن
+  /// شيئاً لم يُنشأ. والمسوّدة ليست عدماً — هي عرضٌ جاهز ينقصه قرار نشر.
+  List<SalesOfferSummary> get _draftOffers =>
+      _offers.where((o) => o.status == SalesOfferStatus.draft).toList();
+
   // «يقارب على الانتهاء» = ثلاثة أيام أو أقل، نفس عتبة بطاقة العرض.
   // العرض الثابت لا يُحتسب هنا: لا مهلة له توشك.
   List<SalesOfferSummary> get _expiringOffers =>
@@ -131,30 +139,45 @@ class _WhHomePageState extends ConsumerState<WhHomePage> {
         _orders.where((o) => o.status == SupplyOrderStatus.pending).toList();
     final expiring = _expiringOffers;
 
-    return ListView(
-      padding: const EdgeInsets.fromLTRB(
-          AppSpacing.page, AppSpacing.sm, AppSpacing.page, AppSpacing.x3l),
+    final drafts = _draftOffers;
+    final gutter = context.pageGutter;
+
+    final counters = <Widget>[
+      SummaryCounter(
+        value: '$_newOrders',
+        label: 'طلبات جديدة',
+        icon: AppIcons.clipboardList,
+        onTap: () => context.go(TRoutes.whOrders),
+      ),
+      SummaryCounter(
+        value: '${_activeOffers.length}',
+        label: 'عرضاً سارياً',
+        icon: AppIcons.tag,
+        onTap: () => context.push(TRoutes.whOffers),
+      ),
+      // المسوّدات عدّادٌ قائم بذاته لا رقمٌ مدموج في «السارية»: حالتهما
+      // مختلفة، ودمجُهما يقول للمستودع إن عرضه يراه الصيدلي وهو لا يراه.
+      if (drafts.isNotEmpty)
+        SummaryCounter(
+          value: '${drafts.length}',
+          label: 'مسوّدة تنتظر النشر',
+          icon: AppIcons.gift,
+          onTap: () => context.push(TRoutes.whOffers),
+        ),
+    ];
+
+    return BoardContent(
+      child: ListView(
+      padding: EdgeInsets.fromLTRB(
+          gutter, AppSpacing.sm, gutter, AppSpacing.x3l),
       children: [
-        // شبكة العدّادات — طلبات جديدة + عروض سارية.
+        // العدّادات صفٌّ يتمدّد: ثلاثة على المكتب، واثنان على الضيّق.
         Row(
           children: [
-            Expanded(
-              child: SummaryCounter(
-                value: '$_newOrders',
-                label: 'طلبات جديدة',
-                icon: AppIcons.clipboardList,
-                onTap: () => context.go(TRoutes.whOrders),
-              ),
-            ),
-            const SizedBox(width: AppSpacing.md),
-            Expanded(
-              child: SummaryCounter(
-                value: '${_activeOffers.length}',
-                label: 'عرضاً سارياً',
-                icon: AppIcons.tag,
-                onTap: () => context.push(TRoutes.whOffers),
-              ),
-            ),
+            for (var i = 0; i < counters.length; i++) ...[
+              if (i > 0) const SizedBox(width: AppSpacing.md),
+              Expanded(child: counters[i]),
+            ],
           ],
         ),
         // بانر قيد التجهيز — يظهر فقط حين توجد طلبات تُعالَج.
@@ -173,15 +196,38 @@ class _WhHomePageState extends ConsumerState<WhHomePage> {
         ],
 
         const SizedBox(height: AppSpacing.md),
-        // زر إنشاء عرض — يظهر دائماً.
-        AppButton(
-          label: 'إنشاء عرض جديد',
-          variant: _activeOffers.isEmpty ? AppButtonVariant.filled : AppButtonVariant.outline,
-          icon: Icons.add,
-          onPressed: () async {
-            await context.push(TRoutes.whCreateOffer);
-            if (mounted) await _load(silent: true);
-          },
+
+        // إجراءان جنباً إلى جنب — الاستيراد ليس إعداداً مدفوناً في شاشةٍ
+        // داخلية: هو الطريق الذي يدخل به المخزون كلّه، فمكانه حيث يبدأ
+        // المستخدم يومه.
+        Row(
+          children: [
+            Expanded(
+              child: AppButton(
+                label: 'إنشاء عرض جديد',
+                variant: _activeOffers.isEmpty
+                    ? AppButtonVariant.filled
+                    : AppButtonVariant.outline,
+                appIcon: AppIcons.plus,
+                onPressed: () async {
+                  await context.push(TRoutes.whCreateOffer);
+                  if (mounted) await _load(silent: true);
+                },
+              ),
+            ),
+            const SizedBox(width: AppSpacing.md),
+            Expanded(
+              child: AppButton(
+                label: 'استيراد مخزون من ملف',
+                variant: AppButtonVariant.outline,
+                appIcon: AppIcons.fileImport,
+                onPressed: () async {
+                  await context.push(TRoutes.whImportInventory);
+                  if (mounted) await _load(silent: true);
+                },
+              ),
+            ),
+          ],
         ),
 
         const SizedBox(height: AppSpacing.lg),
@@ -212,6 +258,7 @@ class _WhHomePageState extends ConsumerState<WhHomePage> {
               ),
             ),
       ],
+      ),
     );
   }
 }

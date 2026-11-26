@@ -13,6 +13,7 @@ import 'package:tawrid_app/shared/ui/ui.dart';
 import 'package:tawrid_app/shared/widgets/barcode_scanner_page.dart';
 import 'package:tawrid_app/shared/utils/money.dart';
 import 'package:tawrid_app/shared/widgets/app_states.dart';
+import 'package:tawrid_app/core/state/inventory_revision.dart';
 
 // أدوية مستودعي (Figma: المستودع / أدوية مستودعي).
 //
@@ -33,6 +34,18 @@ class _WhMedicinesPageState extends ConsumerState<WhMedicinesPage> {
   String _query = '';
   Timer? _debounce;
 
+  /// كم صنفاً في المستودع كلّه — لا كم حُمِّل.
+  int _total = 0;
+
+  /// جلب الصفحة التالية جارٍ — يمنع إطلاق طلبين على نفس الإزاحة.
+  bool _loadingMore = false;
+
+  /// شبكةٌ أم قائمة. الشبكة افتراض سطح المكتب: أربعمئة صنفٍ في عمودٍ
+  /// واحد تمريرٌ لا ينتهي، وفي شبكةٍ لمحةٌ واحدة.
+  bool _grid = true;
+
+  static const int _pageSize = 60;
+
   @override
   void initState() {
     super.initState();
@@ -51,12 +64,13 @@ class _WhMedicinesPageState extends ConsumerState<WhMedicinesPage> {
       _error = null;
     });
     try {
-      final list = await ref
+      final page = await ref
           .read(warehouseMedicineRepositoryProvider)
-          .getMine(search: _query, limit: 50);
+          .getMinePage(search: _query, limit: _pageSize);
       if (!mounted) return;
       setState(() {
-        _items = list;
+        _items = page.items;
+        _total = page.total;
         _loading = false;
       });
     } catch (e) {
@@ -65,6 +79,38 @@ class _WhMedicinesPageState extends ConsumerState<WhMedicinesPage> {
         _error = ApiException.from(e);
         _loading = false;
       });
+    }
+  }
+
+  /// يجلب الصفحة التالية ويُلحقها.
+  ///
+  /// كانت القائمة تقف عند خمسين صنفاً بلا أن تقول إنها وقفت: الباقي
+  /// موجودٌ في الخادم ولا سبيل إليه من الشاشة.
+  Future<void> _loadMore() async {
+    final loaded = _items;
+    if (_loadingMore || loaded == null || loaded.length >= _total) return;
+
+    setState(() => _loadingMore = true);
+    try {
+      final page = await ref
+          .read(warehouseMedicineRepositoryProvider)
+          .getMinePage(
+            search: _query,
+            limit: _pageSize,
+            offset: loaded.length,
+          );
+      if (!mounted) return;
+      setState(() {
+        // الإلحاق على ما في الحالة الآن لا على نسخةٍ قديمة: الحذف أو
+        // التسعير قد يجري أثناء الطلب.
+        _items = [...(_items ?? const []), ...page.items];
+        _total = page.total;
+        _loadingMore = false;
+      });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() => _loadingMore = false);
+      AppSnackbar.error(context, ApiException.from(e).message);
     }
   }
 
@@ -204,6 +250,10 @@ class _WhMedicinesPageState extends ConsumerState<WhMedicinesPage> {
 
   @override
   Widget build(BuildContext context) {
+    // مخزونٌ تغيّر من شاشة الاستيراد — تُعاد القائمة بهدوء بلا مؤشّر
+    // تحميلٍ يقطع ما يقرأه المستخدم.
+    ref.listen(inventoryRevisionProvider, (_, _) => _load(silent: true));
+
     final cs = context.colors;
 
     return Scaffold(
@@ -248,36 +298,62 @@ class _WhMedicinesPageState extends ConsumerState<WhMedicinesPage> {
   Widget _buildBody() {
     final tk = context.tokens;
     final items = _items ?? const <WarehouseMedicine>[];
+    final gutter = context.pageGutter;
+
+    // شريط أدواتٍ واحد: بحثٌ واستيرادٌ وتبديل عرضٍ في سطر على الشاشة
+    // العريضة، وثلاثة أسطر على الضيّقة. كانت كلٌّ منها سطراً مستقلاً
+    // يأكل ثُلث الشاشة قبل أن يظهر صنفٌ واحد.
+    final wide = context.isDesktop;
+
+    final search = AppSearchBar(
+      hint: 'ابحث في أصناف المخزون…',
+      onChanged: _onSearchChanged,
+      onScanTap: _scanBarcode,
+    );
+
+    final actions = Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        _ImportButton(onTap: () => context.push(TRoutes.whImportInventory)),
+        const SizedBox(width: AppSpacing.sm),
+        _ViewToggle(
+          grid: _grid,
+          onChanged: (v) => setState(() => _grid = v),
+        ),
+      ],
+    );
 
     return Column(
       children: [
         Padding(
-          padding: const EdgeInsets.fromLTRB(
-              AppSpacing.page, AppSpacing.xs, AppSpacing.page, 0),
-          child: AppSearchBar(
-            hint: 'ابحث في أصناف المخزون…',
-            onChanged: _onSearchChanged,
-            onScanTap: _scanBarcode,
-          ),
+          padding: EdgeInsets.fromLTRB(gutter, AppSpacing.sm, gutter, 0),
+          child: wide
+              ? Row(
+                  children: [
+                    Expanded(child: search),
+                    const SizedBox(width: AppSpacing.md),
+                    actions,
+                  ],
+                )
+              : Column(
+                  children: [
+                    search,
+                    const SizedBox(height: AppSpacing.sm),
+                    Align(
+                      alignment: AlignmentDirectional.centerStart,
+                      child: actions,
+                    ),
+                  ],
+                ),
         ),
 
         Padding(
-          padding: const EdgeInsets.fromLTRB(
-              AppSpacing.page, AppSpacing.xs, AppSpacing.page, 0),
-          child: _ImportChip(
-            onTap: () => context.push(TRoutes.whImportInventory),
-          ),
-        ),
-
-        Padding(
-          padding: const EdgeInsets.fromLTRB(
-              AppSpacing.page, AppSpacing.sm, AppSpacing.page, AppSpacing.sm),
+          padding: EdgeInsets.fromLTRB(
+              gutter, AppSpacing.sm, gutter, AppSpacing.sm),
           child: Align(
             alignment: AlignmentDirectional.centerStart,
             child: Text(
-              _loading
-                  ? 'جارٍ التحميل…'
-                  : '${items.length} ${items.length == 1 ? 'دواء' : 'دواءً'} في مستودعك',
+              _countLabel(items.length),
               style: context.text.bodySmall?.copyWith(color: tk.hint),
             ),
           ),
@@ -286,6 +362,16 @@ class _WhMedicinesPageState extends ConsumerState<WhMedicinesPage> {
         Expanded(child: _buildList(items)),
       ],
     );
+  }
+
+  /// «٦٠ من ٤١٢ صنفاً» — ما حُمِّل وما يملك، لا خلط بينهما.
+  String _countLabel(int shown) {
+    if (_loading) return 'جارٍ التحميل…';
+    if (_query.trim().isNotEmpty) {
+      return shown < _total ? 'عُرض $shown من $_total نتيجة' : '$shown نتيجة';
+    }
+    if (shown < _total) return 'عُرض $shown من $_total صنفاً في مستودعك';
+    return '$shown ${shown == 1 ? 'دواء' : 'دواءً'} في مستودعك';
   }
 
   Widget _buildList(List<WarehouseMedicine> items) {
@@ -307,31 +393,87 @@ class _WhMedicinesPageState extends ConsumerState<WhMedicinesPage> {
     }
 
     final tk = context.tokens;
+    final gutter = context.pageGutter;
+    final hasMore = items.length < _total;
 
-    return ListView(
-      padding: const EdgeInsets.fromLTRB(
-          AppSpacing.page, 0, AppSpacing.page, AppSpacing.x3l),
-      children: [
-        for (final m in items)
-          Padding(
-            padding: const EdgeInsets.only(bottom: AppSpacing.md),
-            child: _MedicineCard(
-              medicine: m,
-              onRemove: () => _remove(m),
-              onEditPrice: () => _editPrice(m),
+    final footer = Padding(
+      padding: const EdgeInsets.only(top: AppSpacing.lg),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          if (hasMore) ...[
+            Center(
+              child: SizedBox(
+                width: 320,
+                child: AppButton(
+                  label: _loadingMore
+                      ? 'يُحمِّل…'
+                      : 'عرض ${_remaining()} صنفاً إضافياً',
+                  variant: AppButtonVariant.outline,
+                  appIcon: AppIcons.chevronDown,
+                  onPressed: _loadingMore ? null : _loadMore,
+                ),
+              ),
             ),
+            const SizedBox(height: AppSpacing.lg),
+          ],
+          // توضيح ما تعنيه القائمة فعلاً — ليست مخزوناً بكميات وأسعار.
+          Text(
+            'كل صنف في قائمتك يظهر للصيدليات في البحث المقارن. ما لم تحدّد له '
+            'سعراً يُحتسب سعره ٧٤٪ من سعر المستهلك في النشرة الوطنية، '
+            'ويبقى سعرك اليدوي — متى أدخلته — هو المعتمد. الكميات تُحدَّد '
+            'داخل كل عرض بيع.',
+            style: context.text.labelSmall?.copyWith(color: tk.hint),
           ),
-        const SizedBox(height: AppSpacing.xs),
-        // توضيح ما تعنيه القائمة فعلاً — ليست مخزوناً بكميات وأسعار.
-        Text(
-          'كل صنف في قائمتك يظهر للصيدليات في البحث المقارن. ما لم تحدّد له '
-          'سعراً يُحتسب سعره ٧٤٪ من سعر المستهلك في النشرة الوطنية، '
-          'ويبقى سعرك اليدوي — متى أدخلته — هو المعتمد. الكميات تُحدَّد '
-          'داخل كل عرض بيع.',
-          style: context.text.labelSmall?.copyWith(color: tk.hint),
-        ),
-      ],
+        ],
+      ),
     );
+
+    return BoardContent(
+      child: LayoutBuilder(
+        builder: (context, box) {
+          // الشبكة تُحسب من العرض المتاح داخل اللوح لا من عرض النافذة:
+          // الشريط الجانبي والهوامش تأكل مئتي بكسل، وحسابُها من النافذة
+          // يُعطي عموداً زائداً فتُضغط البطاقات.
+          final cols = _grid
+              ? columnsFor(box.maxWidth - gutter * 2, minTile: 340, max: 5)
+              : 1;
+
+          return ListView(
+            padding: EdgeInsets.fromLTRB(gutter, 0, gutter, AppSpacing.x3l),
+            children: [
+              GridView.builder(
+                shrinkWrap: true,
+                physics: const NeverScrollableScrollPhysics(),
+                gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+                  crossAxisCount: cols,
+                  mainAxisSpacing: AppSpacing.md,
+                  crossAxisSpacing: AppSpacing.md,
+                  // ارتفاعٌ ثابت لا نسبة: محتوى البطاقة معروف (اسمٌ
+                  // وسطران وسعرٌ وإجراءان)، والنسبة تُطيلها كلّما اتّسعت
+                  // الشاشة فتصير مستطيلاتٍ فارغة.
+                  mainAxisExtent: _grid ? 150 : 104,
+                ),
+                itemCount: items.length,
+                itemBuilder: (_, i) => _MedicineCard(
+                  medicine: items[i],
+                  dense: !_grid,
+                  onRemove: () => _remove(items[i]),
+                  onEditPrice: () => _editPrice(items[i]),
+                ),
+              ),
+              footer,
+            ],
+          );
+        },
+      ),
+    );
+  }
+
+  int _remaining() {
+    final shown = _items?.length ?? 0;
+    final left = _total - shown;
+    return left < _pageSize ? left : _pageSize;
   }
 }
 
@@ -347,11 +489,15 @@ class _MedicineCard extends StatelessWidget {
     required this.medicine,
     required this.onRemove,
     required this.onEditPrice,
+    this.dense = false,
   });
 
   final WarehouseMedicine medicine;
   final VoidCallback onRemove;
   final VoidCallback onEditPrice;
+
+  /// صفٌّ منخفض لعرض القائمة — الوصف سطرٌ واحد والهوامش أضيق.
+  final bool dense;
 
   @override
   Widget build(BuildContext context) {
@@ -384,13 +530,19 @@ class _MedicineCard extends StatelessWidget {
                     Text(spec,
                         style:
                             context.text.bodySmall?.copyWith(color: tk.hint),
-                        maxLines: 2,
+                        maxLines: dense ? 1 : 2,
                         overflow: TextOverflow.ellipsis),
+                    // الصنف الحرّ لا كود ساكو له — وسطرٌ فارغ مكانه
+                    // يُوحي ببيانٍ ناقص، فيُستبدل بوسمٍ يقول ما هو.
                     if (m.sakoCode.isNotEmpty) ...[
                       const SizedBox(height: 2),
                       Text('كود ساكو: ${m.sakoCode}',
                           style: context.text.labelSmall
                               ?.copyWith(color: tk.hint)),
+                    ] else if (m.isCatalogFree && !dense) ...[
+                      const SizedBox(height: AppSpacing.xs),
+                      const StatusBadge(
+                          label: 'صنف خاص بك', tone: StatusTone.neutral),
                     ],
                   ],
                 ),
@@ -467,37 +619,93 @@ class _MedicineCard extends StatelessWidget {
   );
 }
 
-class _ImportChip extends StatelessWidget {
-  const _ImportChip({required this.onTap});
+/// زرّ الاستيراد — زرٌّ لا شريحةٌ ممتدّة بعرض الشاشة.
+///
+/// كان شريطاً يمتدّ بعرض المكتب كلّه لجملةٍ من أربع كلمات، وهو الشكل
+/// الذي يجعل الشاشة تبدو هاتفاً مكبَّراً: عنصرٌ بُني لعرض ٣٦٠ بكسل
+/// مشدودٌ إلى ١٧٠٠.
+class _ImportButton extends StatelessWidget {
+  const _ImportButton({required this.onTap});
   final VoidCallback onTap;
 
   @override
   Widget build(BuildContext context) {
     final cs = context.colors;
     final tk = context.tokens;
-    return Material(
-      color: tk.brandSurface,
-      borderRadius: BorderRadius.circular(AppRadius.full),
-      child: InkWell(
-        onTap: onTap,
-        borderRadius: BorderRadius.circular(AppRadius.full),
-        child: Padding(
-          padding: const EdgeInsets.symmetric(
-              horizontal: AppSpacing.lg, vertical: AppSpacing.sm),
-          child: Row(
-            children: [
-              AppIcon(AppIcons.fileText, size: 16, color: cs.primary),
-              const SizedBox(width: AppSpacing.xs),
-              Expanded(
-                child: Text(
-                  'استيراد مخزون الأدوية الخاص بي',
-                  style: context.text.bodySmall?.copyWith(color: cs.primary),
+
+    return Tooltip(
+      message: 'استيراد المخزون من ملف Excel',
+      child: Material(
+        color: tk.brandSurface,
+        borderRadius: BorderRadius.circular(AppRadius.md),
+        child: InkWell(
+          onTap: onTap,
+          borderRadius: BorderRadius.circular(AppRadius.md),
+          child: Padding(
+            padding: const EdgeInsets.symmetric(
+                horizontal: AppSpacing.lg, vertical: 13),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                AppIcon(AppIcons.fileImport, size: 18, color: cs.primary),
+                const SizedBox(width: AppSpacing.sm),
+                Text(
+                  'استيراد مخزون',
+                  style: context.text.labelMedium?.copyWith(color: cs.primary),
                 ),
-              ),
-              AppIcon(AppIcons.chevronForwardRtl, size: 14, color: tk.hint),
-            ],
+              ],
+            ),
           ),
         ),
+      ),
+    );
+  }
+}
+
+/// مبدّل شبكة/قائمة — زوجُ أيقوناتٍ بطراز سطح المكتب.
+class _ViewToggle extends StatelessWidget {
+  const _ViewToggle({required this.grid, required this.onChanged});
+
+  final bool grid;
+  final ValueChanged<bool> onChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = context.colors;
+    final tk = context.tokens;
+
+    Widget seg(AppIcons icon, bool active, String tip, VoidCallback onTap) =>
+        Tooltip(
+          message: tip,
+          child: InkWell(
+            onTap: active ? null : onTap,
+            borderRadius: BorderRadius.circular(AppRadius.sm),
+            child: Container(
+              padding: const EdgeInsets.symmetric(
+                  horizontal: AppSpacing.md, vertical: 11),
+              decoration: BoxDecoration(
+                color: active ? cs.surface : Colors.transparent,
+                borderRadius: BorderRadius.circular(AppRadius.sm),
+                boxShadow: active ? tk.cardShadow : null,
+              ),
+              child: AppIcon(icon,
+                  size: 18, color: active ? cs.primary : tk.hint),
+            ),
+          ),
+        );
+
+    return Container(
+      padding: const EdgeInsets.all(3),
+      decoration: BoxDecoration(
+        color: tk.surfaceAlt,
+        borderRadius: BorderRadius.circular(AppRadius.md),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          seg(AppIcons.layoutGrid, grid, 'عرض شبكي', () => onChanged(true)),
+          seg(AppIcons.listRows, !grid, 'عرض قائمة', () => onChanged(false)),
+        ],
       ),
     );
   }

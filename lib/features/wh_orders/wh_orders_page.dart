@@ -158,8 +158,9 @@ class _WhOrdersPageState extends ConsumerState<WhOrdersPage> {
         ),
 
         Padding(
-          padding: const EdgeInsets.fromLTRB(
-              AppSpacing.page, AppSpacing.md, AppSpacing.page, AppSpacing.sm),
+          padding: EdgeInsets.fromLTRB(
+              context.pageGutter, AppSpacing.md, context.pageGutter,
+              AppSpacing.sm),
           child: Align(
             alignment: AlignmentDirectional.centerStart,
             child: Text(_tab.countLabel(shown.length),
@@ -178,11 +179,16 @@ class _WhOrdersPageState extends ConsumerState<WhOrdersPage> {
                     ),
                   ],
                 )
-              : ListView.separated(
-                  padding: const EdgeInsets.fromLTRB(
-                      AppSpacing.page, 0, AppSpacing.page, AppSpacing.x3l),
+              // شبكةٌ لا عمود: الطلبية بطاقةٌ مربّعة المحتوى، وعمودٌ
+              // واحدٌ منها بعرض المكتب يترك ثلثي الصفّ فارغاً ويُطيل
+              // التمرير بلا داعٍ.
+              : AdaptiveCardGrid(
+                  padding: EdgeInsets.fromLTRB(context.pageGutter, 0,
+                      context.pageGutter, AppSpacing.x3l),
                   itemCount: shown.length,
-                  separatorBuilder: (_, _) => const SizedBox(height: AppSpacing.md),
+                  tileHeight: 196,
+                  minTileWidth: 380,
+                  maxColumns: 4,
                   itemBuilder: (_, i) => WhOrderCard(
                     order: shown[i],
                     onTap: () => _openDetails(shown[i]),

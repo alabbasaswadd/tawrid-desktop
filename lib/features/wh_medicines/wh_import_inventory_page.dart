@@ -7,9 +7,11 @@ import 'package:tawrid_app/app/theme/app_spacing.dart';
 import 'package:tawrid_app/app/theme/app_tokens_ext.dart';
 import 'package:tawrid_app/core/network/api_exception.dart';
 import 'package:tawrid_app/core/realtime/inventory_import_hub.dart';
+import 'package:tawrid_app/core/state/inventory_revision.dart';
 import 'package:tawrid_app/features/wh_medicines/import_offer_setup_page.dart';
 import 'package:tawrid_app/models/ai_import_models.dart';
 import 'package:tawrid_app/repositories/inventory_import_repository.dart';
+import 'package:tawrid_app/repositories/sales_offer_repository.dart';
 import 'package:tawrid_app/repositories/warehouse_service_area_repository.dart';
 import 'package:tawrid_app/shared/ui/ui.dart';
 
@@ -71,6 +73,12 @@ class _WhImportInventoryPageState extends ConsumerState<WhImportInventoryPage> {
   /// `null` تعني «لم يفتحها» لا «لا عروض»: القائمة الفارغة قرارٌ صريح
   /// («بلا عروض») يجب أن يُحترم، والفرق بينهما لا يحمله طولُ القائمة.
   List<ImportOfferPlan>? _offerDraft;
+
+  /// نشر العروض المُنشأة جارٍ — بعد وصول التقرير مباشرةً.
+  bool _publishing = false;
+
+  /// عروضٌ تعذّر نشرها، بأسمائها. أُنشئت ولم تُعلَن.
+  List<String> _publishFailed = const [];
 
   /// سقط ردّ التطبيق والكتابة ماضيةٌ في الخادم.
   ///
@@ -687,6 +695,52 @@ class _WhImportInventoryPageState extends ConsumerState<WhImportInventoryPage> {
       _applyDeadline = null;
       _report = report;
     });
+
+    // «أدويتي» و«العروض» فرعان حيّان في IndexedStack لا يُعاد بناؤهما،
+    // فما كُتب الآن لا يظهر فيهما ما لم يُطلَب منهما إعادة الجلب — ويبدو
+    // الاستيراد كأنه لم يحدث وقد حدث.
+    if (report.total > 0 || report.offers.isNotEmpty) {
+      ref.read(inventoryRevisionProvider.notifier).bump();
+    }
+
+    if (report.offers.isNotEmpty) _publishCreated(report.offers);
+  }
+
+  /// ينشر العروض التي أنشأها الاستيراد.
+  ///
+  /// الخادم يُنشئها مسوّدةً، والمسوّدة لا يراها صيدلي. وقد اختار صاحب
+  /// المستودع أن يُنشَر ما يستورده فوراً — فيُنشَر هنا بدل أن يُطالَب
+  /// بفتح كل عرضٍ ونشره بيده.
+  ///
+  /// واحداً واحداً لا دفعةً: لا مسار يقبل جمعها، وفشلُ واحدٍ لا يجوز أن
+  /// يمنع نشر البقية. وما تعذّر يُقال باسمه — عرضٌ أُنشئ ولم يُعلَن
+  /// حالةٌ وسطى، وكتمانُها يُري المستودع عرضاً يظنّه حيّاً وهو ساكن.
+  Future<void> _publishCreated(List<ImportCreatedOffer> offers) async {
+    setState(() {
+      _publishing = true;
+      _publishFailed = const [];
+    });
+
+    final repo = ref.read(salesOfferRepositoryProvider);
+    final failed = <String>[];
+
+    for (final offer in offers) {
+      if (offer.offerId.isEmpty) continue;
+      try {
+        await repo.publishOffer(offer.offerId);
+      } on Object {
+        failed.add(offer.title.isNotEmpty ? offer.title : offer.company);
+      }
+    }
+
+    if (!mounted) return;
+    setState(() {
+      _publishing = false;
+      _publishFailed = failed;
+    });
+
+    // شاشة العروض تُعيد الجلب فتظهر سارية لا مسوّدة.
+    ref.read(inventoryRevisionProvider.notifier).bump();
   }
 
   /// ينهي المزامنة بعطل — ويعود إلى المراجعة بتحديدات المستخدم كما هي.
@@ -862,6 +916,8 @@ class _WhImportInventoryPageState extends ConsumerState<WhImportInventoryPage> {
     if (_report != null) {
       body = _ReportView(
         report: _report!,
+        publishing: _publishing,
+        publishFailed: _publishFailed,
         onDone: () => Navigator.of(context).maybePop(),
         onAgain: _reset,
       );
@@ -918,6 +974,9 @@ class _WhImportInventoryPageState extends ConsumerState<WhImportInventoryPage> {
         onRestart: _reset,
         offerCount: (_offerDraft ?? _autoOffers(groups)).length,
         offerCompanies: groups.length,
+        noCoverage: (ref.watch(myServiceGovernoratesProvider).value ??
+                const [])
+            .isEmpty,
         onEditOffers: groups.isEmpty ? null : () => _editOffers(groups),
       );
     } else {
@@ -2021,7 +2080,7 @@ class _SyncOfferCard extends StatelessWidget {
           if (offer.state == _OfferSync.created) ...[
             const SizedBox(height: AppSpacing.xs),
             Text(
-              'مسوّدة — تُنشَر من شاشة العروض',
+              'يُنشَر تلقائياً عند انتهاء المزامنة',
               style: context.text.labelSmall?.copyWith(color: tk.hint),
             ),
           ],
@@ -2205,6 +2264,7 @@ class _ReviewView extends StatefulWidget {
     this.error,
     this.offerCount = 0,
     this.offerCompanies = 0,
+    this.noCoverage = false,
     this.onEditOffers,
   });
 
@@ -2227,6 +2287,9 @@ class _ReviewView extends StatefulWidget {
 
   /// يفتح شاشة إعداد العروض — `null` لملفٍ لا عرض فيه.
   final VoidCallback? onEditOffers;
+
+  /// المستودع بلا مناطق تغطية — سببٌ يُقال باسمه لا يُلمَّح إليه.
+  final bool noCoverage;
 
   @override
   State<_ReviewView> createState() => _ReviewViewState();
@@ -2395,6 +2458,7 @@ class _ReviewViewState extends State<_ReviewView> {
                     child: _OfferPlanChip(
                       count: widget.offerCount,
                       companies: widget.offerCompanies,
+                      noCoverage: widget.noCoverage,
                       onTap: widget.onEditOffers!,
                     ),
                   ),
@@ -2429,10 +2493,12 @@ class _OfferPlanChip extends StatelessWidget {
     required this.count,
     required this.companies,
     required this.onTap,
+    this.noCoverage = false,
   });
 
   final int count;
   final int companies;
+  final bool noCoverage;
   final VoidCallback onTap;
 
   @override
@@ -2463,7 +2529,9 @@ class _OfferPlanChip extends StatelessWidget {
               Flexible(
                 child: Text(
                   needsSetup
-                      ? 'العروض تحتاج ضبطاً'
+                      ? (noCoverage
+                          ? 'حدّد مناطق تغطيتك أولاً'
+                          : 'العروض تحتاج ضبطاً')
                       : count == 0
                           ? 'بلا عروض'
                           : '$count عروض جاهزة',
@@ -3165,11 +3233,19 @@ class _ReportView extends StatelessWidget {
     required this.report,
     required this.onDone,
     required this.onAgain,
+    this.publishing = false,
+    this.publishFailed = const [],
   });
 
   final ImportReport report;
   final VoidCallback onDone;
   final VoidCallback onAgain;
+
+  /// نشر العروض جارٍ الآن.
+  final bool publishing;
+
+  /// ما تعذّر نشره — بأسمائه.
+  final List<String> publishFailed;
 
   @override
   Widget build(BuildContext context) {
@@ -3238,10 +3314,48 @@ class _ReportView extends StatelessWidget {
                   children: [
                     AppIcon(AppIcons.gift, size: 18, color: context.colors.primary),
                     const SizedBox(width: AppSpacing.sm),
-                    Text('أُنشئ ${report.offers.length} عرضاً',
-                        style: context.text.labelLarge),
+                    Expanded(
+                      child: Text('أُنشئ ${report.offers.length} عرضاً',
+                          style: context.text.labelLarge),
+                    ),
+                    if (publishing)
+                      SizedBox(
+                        width: 16,
+                        height: 16,
+                        child: CircularProgressIndicator(
+                          strokeWidth: 2,
+                          valueColor: AlwaysStoppedAnimation<Color>(
+                              context.colors.primary),
+                        ),
+                      ),
                   ],
                 ),
+                const SizedBox(height: AppSpacing.xs),
+
+                // حالة النشر تُقال في موضعها: «أُنشئ» وحدها كانت تترك
+                // السؤال معلّقاً — أوصلت الصيدليات أم لا؟
+                Text(
+                  publishing
+                      ? 'يَنشرها الآن…'
+                      : publishFailed.isEmpty
+                          ? 'نُشرت — تراها الصيدليات في مناطق استهدافك'
+                          : 'نُشر ${report.offers.length - publishFailed.length} '
+                              'من ${report.offers.length}',
+                  style: context.text.bodySmall?.copyWith(
+                    color: publishFailed.isEmpty
+                        ? context.tokens.success
+                        : context.tokens.warning,
+                  ),
+                ),
+                if (publishFailed.isNotEmpty) ...[
+                  const SizedBox(height: 2),
+                  Text(
+                    'تعذّر نشر: ${publishFailed.join(' · ')} — انشرها من شاشة '
+                    'العروض',
+                    style: context.text.labelSmall
+                        ?.copyWith(color: context.tokens.warning),
+                  ),
+                ],
                 const SizedBox(height: AppSpacing.sm),
                 for (final o in report.offers)
                   Padding(
