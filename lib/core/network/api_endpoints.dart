@@ -207,6 +207,12 @@ abstract final class ApiEndpoints {
   static String whImportApply(String jobId) =>
       '$_wh/medicines/import/$jobId/apply';
 
+  /// إنشاء العروض من مهمةٍ طُبِّقت — خطوةٌ تالية لـ apply لا حقلٌ فيه.
+  /// فصلُها يجعل التطبيق يعود حين يفرغ المخزون، ويجعل عرضاً تعذّر
+  /// يُعاد طلبه وحده بلا إعادة الملف كلّه.
+  static String whImportOffers(String jobId) =>
+      '$_wh/medicines/import/$jobId/offers';
+
   /// قناة تقدّم الاستيراد — منفصلة عن قناة المحادثات: تُفتح لشاشة واحدة
   /// لدقائق، وإغلاقها لا يجوز أن يمسّ وصول الرسائل.
   static const String inventoryImportsHub = '$_ph/hubs/inventory-imports';

@@ -13,10 +13,20 @@ import 'package:tawrid_app/shared/widgets/multi_region_picker.dart';
 
 /// بنود شركةٍ واحدة كما جُمعت من الملف.
 class ImportOfferGroup {
-  const ImportOfferGroup({required this.company, required this.rows});
+  const ImportOfferGroup({
+    required this.company,
+    required this.rows,
+    this.includeAllItems = false,
+  });
 
   final String company;
   final List<ImportRow> rows;
+
+  /// بُنيت المجموعة في وضع نشرة الأسعار — فتُمرَّر كذلك إلى الخادم.
+  ///
+  /// بلا نقلها كان الخادم يُعيد تصفية البنود بشرط «حَمَل خصماً أو
+  /// بونصاً» فيُخرج نشرةَ الأسعار كلّها — وقد عدّها العميل بنوداً.
+  final bool includeAllItems;
 
   int get discounted =>
       rows.where((r) => (r.discountPercentage ?? 0) > 0).length;
@@ -55,6 +65,7 @@ class ImportOfferGroup {
         expiresAt: now.add(const Duration(days: 30)),
         isPublicInRegion: true,
         targetRegions: regions,
+        includeAllItems: includeAllItems,
       );
 }
 
@@ -193,6 +204,7 @@ class _ImportOfferSetupPageState extends ConsumerState<ImportOfferSetupPage> {
               expiresAt: _standing ? null : _expiresAt,
               isPublicInRegion: true,
               targetRegions: _regions,
+              includeAllItems: g.includeAllItems,
             ))
         .toList();
 
@@ -271,6 +283,7 @@ class _ImportOfferSetupPageState extends ConsumerState<ImportOfferSetupPage> {
                           _enabled.add(g.company);
                         }
                       }),
+                      onShowItems: () => showOfferItemsDialog(context, g),
                     );
                   },
                 );
@@ -503,12 +516,16 @@ class _CompanyCard extends StatelessWidget {
     required this.enabled,
     required this.controller,
     required this.onToggle,
+    required this.onShowItems,
   });
 
   final ImportOfferGroup group;
   final bool enabled;
   final TextEditingController controller;
   final VoidCallback onToggle;
+
+  /// يفتح نافذة البنود — ما سيراه الصيدلي بالضبط.
+  final VoidCallback onShowItems;
 
   @override
   Widget build(BuildContext context) {
@@ -547,18 +564,23 @@ class _CompanyCard extends StatelessWidget {
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis),
                 ),
-                StatusBadge(
-                  label: '${group.rows.length} بنداً',
-                  tone: StatusTone.neutral,
-                ),
               ],
             ),
           ),
           const SizedBox(height: AppSpacing.xs),
           Wrap(
+            crossAxisAlignment: WrapCrossAlignment.center,
             spacing: AppSpacing.xs,
             runSpacing: AppSpacing.xs,
             children: [
+              // ── عدد البنود بابُها لا خبرُها ────────────────────────────
+              // «١٢ بنداً» رقمٌ يُثير السؤال ولا يُجيبه، وصاحب المستودع
+              // يُقرّ عرضاً سيراه الصيادلة بأسعاره — فحقُّه أن يرى ما
+              // فيه قبل أن يُقرّه، لا أن يثق بعدٍّ مجرّد.
+              _ItemsButton(
+                count: group.rows.length,
+                onTap: onShowItems,
+              ),
               if (group.discounted > 0)
                 StatusBadge(
                     label: 'خصم على ${group.discounted}',
@@ -583,6 +605,295 @@ class _CompanyCard extends StatelessWidget {
       ),
     );
   }
+}
+
+/// عدّاد البنود، زرّاً — نقرةٌ تفتح ما فيها.
+class _ItemsButton extends StatelessWidget {
+  const _ItemsButton({required this.count, required this.onTap});
+
+  final int count;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = context.colors;
+
+    return Material(
+      color: cs.surfaceContainerHighest,
+      borderRadius: BorderRadius.circular(AppRadius.full),
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(AppRadius.full),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(
+              horizontal: AppSpacing.sm, vertical: 5),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              AppIcon(AppIcons.listRows, size: 12, color: cs.primary),
+              const SizedBox(width: AppSpacing.xs),
+              Text('$count بنداً',
+                  style: context.text.labelSmall?.copyWith(color: cs.primary)),
+              const SizedBox(width: AppSpacing.xs),
+              // الشيفرون يسار النصّ — اصطلاح روابط التفاصيل في RTL.
+              AppIcon(AppIcons.chevronForwardRtl, size: 12, color: cs.primary),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// يفتح نافذة بنود العرض.
+///
+/// نافذةٌ لا صفحة: قرارُ المستخدم في شاشة الإعداد، والذهابُ إلى صفحةٍ
+/// أخرى وعودةٌ منها يقطع عليه ما كان فيه. والشاشة عريضة تسع النافذة
+/// بجدولها كاملاً.
+Future<void> showOfferItemsDialog(
+  BuildContext context,
+  ImportOfferGroup group,
+) =>
+    showDialog<void>(
+      context: context,
+      builder: (_) => _OfferItemsDialog(group: group),
+    );
+
+/// بنود عرضٍ واحد، جدولاً — ما سيراه الصيدلي بالضبط.
+class _OfferItemsDialog extends StatelessWidget {
+  const _OfferItemsDialog({required this.group});
+
+  final ImportOfferGroup group;
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = context.colors;
+    final tk = context.tokens;
+
+    final rows = [...group.rows]
+      ..sort((a, b) => a.rowNumber.compareTo(b.rowNumber));
+
+    return Dialog(
+      backgroundColor: cs.surface,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(AppRadius.lg),
+      ),
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 960, maxHeight: 620),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            // ── الترويسة ───────────────────────────────────────────────
+            Container(
+              padding: const EdgeInsets.fromLTRB(AppSpacing.lg, AppSpacing.md,
+                  AppSpacing.md, AppSpacing.md),
+              decoration: BoxDecoration(
+                color: tk.brandSurface,
+                borderRadius: const BorderRadius.vertical(
+                    top: Radius.circular(AppRadius.lg)),
+              ),
+              child: Row(
+                children: [
+                  AppIcon(AppIcons.gift, size: 18, color: cs.primary),
+                  const SizedBox(width: AppSpacing.sm),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Text('بنود عرض ${group.label}',
+                            style: context.text.titleMedium),
+                        const SizedBox(height: 2),
+                        Text(
+                          '${rows.length} بنداً'
+                          '${group.discounted > 0 ? " · خصم على ${group.discounted}" : ""}'
+                          '${group.bonused > 0 ? " · بونص على ${group.bonused}" : ""}',
+                          style: context.text.labelSmall
+                              ?.copyWith(color: tk.hint),
+                        ),
+                      ],
+                    ),
+                  ),
+                  IconButton(
+                    onPressed: () => Navigator.of(context).pop(),
+                    icon: AppIcon(AppIcons.x, size: 16, color: tk.hint),
+                    tooltip: 'إغلاق',
+                  ),
+                ],
+              ),
+            ),
+
+            const _ItemsHeaderRow(),
+
+            Flexible(
+              child: ListView.separated(
+                padding: EdgeInsets.zero,
+                itemCount: rows.length,
+                separatorBuilder: (_, _) =>
+                    Divider(height: 1, color: cs.outline),
+                itemBuilder: (_, i) => _ItemRow(row: rows[i], index: i),
+              ),
+            ),
+
+            // ── التذييل ────────────────────────────────────────────────
+            Container(
+              padding: const EdgeInsets.symmetric(
+                  horizontal: AppSpacing.lg, vertical: AppSpacing.md),
+              decoration: BoxDecoration(
+                border: Border(top: BorderSide(color: cs.outline)),
+              ),
+              child: Row(
+                children: [
+                  Expanded(
+                    child: Text(
+                      'الأسعار كما قرأها الوكيل من ملفك — تُصحَّح من شاشة '
+                      'المراجعة قبل المزامنة.',
+                      style:
+                          context.text.labelSmall?.copyWith(color: tk.hint),
+                    ),
+                  ),
+                  const SizedBox(width: AppSpacing.md),
+                  SizedBox(
+                    width: 140,
+                    child: AppButton(
+                      label: 'إغلاق',
+                      variant: AppButtonVariant.outline,
+                      onPressed: () => Navigator.of(context).pop(),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// ترويسة الجدول — ثابتة فوق التمرير فلا تُنسى الأعمدة في منتصف القائمة.
+class _ItemsHeaderRow extends StatelessWidget {
+  const _ItemsHeaderRow();
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = context.colors;
+    final style = context.text.labelSmall?.copyWith(color: context.tokens.hint);
+
+    return Container(
+      padding: const EdgeInsets.symmetric(
+          horizontal: AppSpacing.lg, vertical: AppSpacing.sm),
+      decoration: BoxDecoration(
+        color: cs.surfaceContainerHighest,
+        border: Border(bottom: BorderSide(color: cs.outline)),
+      ),
+      child: Row(
+        children: [
+          SizedBox(width: 44, child: Text('السطر', style: style)),
+          Expanded(flex: 4, child: Text('الصنف', style: style)),
+          SizedBox(width: 90, child: Text('الكمية', style: style)),
+          SizedBox(width: 110, child: Text('السعر', style: style)),
+          SizedBox(width: 80, child: Text('الخصم', style: style)),
+          SizedBox(width: 90, child: Text('البونص', style: style)),
+        ],
+      ),
+    );
+  }
+}
+
+class _ItemRow extends StatelessWidget {
+  const _ItemRow({required this.row, required this.index});
+
+  final ImportRow row;
+  final int index;
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = context.colors;
+    final tk = context.tokens;
+
+    // تظليل السطور الزوجية: الجدول عريض، والعين تتيه بين عموده الأول
+    // وعموده الأخير بلا خطٍّ يقودها.
+    return Container(
+      color: index.isEven ? null : cs.surfaceContainerHighest.withValues(alpha: 0.4),
+      padding: const EdgeInsets.symmetric(
+          horizontal: AppSpacing.lg, vertical: AppSpacing.sm),
+      child: Row(
+        children: [
+          SizedBox(
+            width: 44,
+            child: Text('${row.rowNumber}',
+                style: context.text.labelSmall?.copyWith(color: tk.hint)),
+          ),
+          Expanded(
+            flex: 4,
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text(row.name,
+                    style: context.text.bodySmall,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis),
+                // العيار والشكل تحت الاسم لا في عمودٍ ثالث: هما تمييزٌ
+                // له لا بيانٌ مستقلّ، وعمودٌ لهما يُضيّق عمود الاسم.
+                if (row.strength != null || row.form != null)
+                  Text(
+                    [
+                      if (row.strength != null) '${_n(row.strength!)} ملغ',
+                      if (row.form != null) row.form!,
+                    ].join(' · '),
+                    style:
+                        context.text.labelSmall?.copyWith(color: tk.hint),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+              ],
+            ),
+          ),
+          SizedBox(
+            width: 90,
+            child: Text(
+              '${row.quantity ?? 1} ${row.unit ?? "علبة"}',
+              style: context.text.labelSmall,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+            ),
+          ),
+          SizedBox(
+            width: 110,
+            child: Text(
+              row.price != null ? _n(row.price!) : '—',
+              style: row.price != null
+                  ? context.priceStyle
+                  : context.text.labelSmall?.copyWith(color: tk.hint),
+            ),
+          ),
+          SizedBox(
+            width: 80,
+            child: (row.discountPercentage ?? 0) > 0
+                ? Text('${_n(row.discountPercentage!)}٪',
+                    style: context.text.labelSmall
+                        ?.copyWith(color: tk.success))
+                : Text('—',
+                    style: context.text.labelSmall
+                        ?.copyWith(color: tk.hint)),
+          ),
+          SizedBox(
+            width: 90,
+            child: row.bonusLabel != null
+                ? BonusBadge(label: row.bonusLabel!)
+                : Text('—',
+                    style: context.text.labelSmall
+                        ?.copyWith(color: tk.hint)),
+          ),
+        ],
+      ),
+    );
+  }
+
+  static String _n(double v) =>
+      v == v.roundToDouble() ? v.toStringAsFixed(0) : v.toString();
 }
 
 class _DateField extends StatelessWidget {

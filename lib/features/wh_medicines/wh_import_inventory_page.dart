@@ -74,6 +74,38 @@ class _WhImportInventoryPageState extends ConsumerState<WhImportInventoryPage> {
   /// («بلا عروض») يجب أن يُحترم، والفرق بينهما لا يحمله طولُ القائمة.
   List<ImportOfferPlan>? _offerDraft;
 
+  /// الخطّة المُقرّة، محفوظةً حتى تُنادى خطوة العروض.
+  ///
+  /// العروض لم تعد حقلاً في طلب التطبيق بل نداءً بعده، فيجب أن تبقى
+  /// الخطّة في متناول اليد حين يعود ردُّ التطبيق — ومن أيّ طريقٍ عاد:
+  /// من الردّ نفسه، أو من المراقبة الدورية حين يضيع الردّ.
+  List<ImportOfferPlan> _pendingOffers = const [];
+
+  /// يُرفَع الملف بلا مطابقة كتالوج — مزامنةٌ مع المخزون والعروض وحدهما.
+  ///
+  /// قرارٌ يُتَّخذ قبل الرفع لا بعده: المطابقة مرحلةٌ في الخادم تجري
+  /// أثناء التحليل، فلا تُلغى بأثرٍ رجعي.
+  bool _skipCatalog = false;
+
+  /// الملف نشرة أسعار — فكل أصنافه بنود عرضٍ لا حَمَلةُ الخصم وحدهم.
+  ///
+  /// «ما هو بند عرض؟» سؤالٌ لا يملك الوكيل جوابه: هو يرى خصماً أو
+  /// بونصاً فيعرفه عرضاً، وأكثر ما يصل المستودعات نشرةُ أسعارٍ صرف بلا
+  /// علامةٍ يلتقطها. فصاحب المستودع وحده يعرف أيّهما رفع.
+  bool _priceListMode = false;
+
+  /// أقرّ المستخدم أن يمضي رغم بنودٍ ينقصها سعرُها.
+  ///
+  /// قرارٌ صريح لا صمت: اللافتة تقول كم بنداً سيُطرَح، وتعرض ملأه أو
+  /// تركه. والتارك يمضي بلا أن تُعاد عليه في كل إعادة بناء.
+  bool _gapsIgnored = false;
+
+  /// هل نُوديت خطوة العروض لهذا التطبيق؟
+  ///
+  /// النداء ليس آمناً للتكرار — مرّتان يُنشئان عرضين. وللردّ طريقان
+  /// يصل منهما، فبلا هذا العلم قد يسلكهما معاً.
+  bool _offersSent = false;
+
   /// نشر العروض المُنشأة جارٍ — بعد وصول التقرير مباشرةً.
   bool _publishing = false;
 
@@ -268,6 +300,7 @@ class _WhImportInventoryPageState extends ConsumerState<WhImportInventoryPage> {
       final started = await ref.read(inventoryImportRepositoryProvider).start(
             bytes: bytes,
             fileName: file.name,
+            skipCatalogMatching: _skipCatalog,
             onProgress: (sent, total) {
               if (!mounted || total <= 0) return;
               setState(() => _uploadPercent = (sent / total * 100).round());
@@ -450,12 +483,27 @@ class _WhImportInventoryPageState extends ConsumerState<WhImportInventoryPage> {
     final byCompany = <String, List<ImportRow>>{};
 
     for (final row in _rows) {
-      if (!row.isOfferItem || !row.selected || !row.isActionable) continue;
+      // `canBeOfferItem` لا `isOfferItem`: الصفّ بلا سعرٍ يُطرَح في
+      // الخادم، وعدّه هنا يجعل الشريط يَعِد بعشرين بنداً ويصل منها
+      // سبعة عشر — ورقمٌ يكذب أسوأ من رقمٍ ناقص. ومن طُرح يُقال له
+      // أنه طُرح في لافتة «الحقول الناقصة» لا يُطوى عنه.
+      //
+      // وفي وضع نشرة الأسعار يسقط شرط «حَمَل خصماً أو بونصاً» وحده:
+      // الاسم والسعر يبقيان شرطين، فنشرةٌ بلا أسعار ليست نشرة.
+      final eligible = _priceListMode
+          ? row.isActionable && !row.needsPrice
+          : row.canBeOfferItem;
+
+      if (!eligible || !row.selected) continue;
       byCompany.putIfAbsent(row.company?.trim() ?? '', () => []).add(row);
     }
 
     final groups = byCompany.entries
-        .map((e) => ImportOfferGroup(company: e.key, rows: e.value))
+        .map((e) => ImportOfferGroup(
+              company: e.key,
+              rows: e.value,
+              includeAllItems: _priceListMode,
+            ))
         .toList();
 
     // الأكثر بنوداً أولاً، والمجهولة آخراً: هي الأقلّ إفادةً وأقربها
@@ -510,6 +558,8 @@ class _WhImportInventoryPageState extends ConsumerState<WhImportInventoryPage> {
       _syncDone = 0;
       _syncTotal = selected.length;
       _offerPlans = _plannedOffers(groups, offers);
+      _pendingOffers = offers;
+      _offersSent = false;
       _watchMisses = 0;
       _applyDeadline = DateTime.now().add(const Duration(minutes: 30));
       _activity = 'يزامن مع مخزونك…';
@@ -529,10 +579,9 @@ class _WhImportInventoryPageState extends ConsumerState<WhImportInventoryPage> {
                 selectedRowIds: selected,
                 priceOverrides: _priceOverrides,
                 catalogOverrides: _catalogOverrides,
-                offers: offers,
               );
       if (!mounted) return;
-      _finishApply(report);
+      await _finishApply(report);
     } on Object catch (e) {
       if (!mounted || !_applying) return;
       // `on ApiException` كانت تُخطئ الهدف: ما يرميه Dio عند انقضاء
@@ -671,7 +720,7 @@ class _WhImportInventoryPageState extends ConsumerState<WhImportInventoryPage> {
       final settled =
           job.rows.any((r) => r.outcome != ImportOutcome.pending);
 
-      _finishApply(settled
+      await _finishApply(settled
           ? ImportReport.fromRows(
               jobId: jobId,
               rows: job.rows,
@@ -687,23 +736,62 @@ class _WhImportInventoryPageState extends ConsumerState<WhImportInventoryPage> {
     }
   }
 
-  void _finishApply(ImportReport report) {
+  Future<void> _finishApply(ImportReport report) async {
+    // إنهاءٌ واحد لكل مزامنة. للردّ طريقان — الطلب والمراقبة — وقد يصل
+    // الأبطأ بعد أن أنهى الأسرع: فلولا هذا الحارس لاستُبدل تقريرٌ كاملٌ
+    // بعروضه بتقريرٍ بُني قبلها.
+    if (!_applying) return;
+
     _applyWatch?.cancel();
+
+    // العروض بعد المخزون لا معه: الخادم فصل الخطوتين، فتُنادى الثانية
+    // هنا — حيث يلتقي طريقا الردّ، من الطلب أو من المراقبة.
+    final full = await _createOffers(report);
+    if (!mounted) return;
+
     setState(() {
       _applying = false;
       _detached = false;
       _applyDeadline = null;
-      _report = report;
+      _report = full;
     });
 
     // «أدويتي» و«العروض» فرعان حيّان في IndexedStack لا يُعاد بناؤهما،
     // فما كُتب الآن لا يظهر فيهما ما لم يُطلَب منهما إعادة الجلب — ويبدو
     // الاستيراد كأنه لم يحدث وقد حدث.
-    if (report.total > 0 || report.offers.isNotEmpty) {
+    if (full.total > 0 || full.offers.isNotEmpty) {
       ref.read(inventoryRevisionProvider.notifier).bump();
     }
 
-    if (report.offers.isNotEmpty) _publishCreated(report.offers);
+    if (full.offers.isNotEmpty) _publishCreated(full.offers);
+  }
+
+  /// يُنشئ العروض المُقرّة ويدمج حصيلتها في التقرير.
+  ///
+  /// الشاشة تبقى على «يزامن» أثناءه: المستخدم ضغط زرّاً واحداً، وتقسيمُ
+  /// انتظاره إلى انتظارين لا يعنيه. وبطاقات العروض تتبدّل أمامه بأخبار
+  /// القناة كما كانت.
+  Future<ImportReport> _createOffers(ImportReport report) async {
+    final plans = _pendingOffers;
+    if (plans.isEmpty || _offersSent) return report;
+
+    // يُرفع قبل أول await لا بعده: للردّ طريقان يصل منهما، وتبديلٌ
+    // بينهما في أثناء الانتظار يُنشئ كل عرضٍ مرّتين.
+    _offersSent = true;
+
+    if (!mounted) return report;
+    setState(() => _activity = 'يُنشئ العروض…');
+
+    try {
+      final result = await ref
+          .read(inventoryImportRepositoryProvider)
+          .createOffers(report.jobId, plans);
+      return report.withOffers(result);
+    } on Object catch (e) {
+      // عطلُ هذه الخطوة لا يمسّ المخزون — وقد كُتب وحُفظ. فيُقال ولا
+      // يُكتَم: صاحبه يحتاج أن يعرف ليُنشئ عروضه من شاشة العروض.
+      return report.withOfferError(ApiException.from(e).message);
+    }
   }
 
   /// ينشر العروض التي أنشأها الاستيراد.
@@ -893,6 +981,11 @@ class _WhImportInventoryPageState extends ConsumerState<WhImportInventoryPage> {
       _syncOffers.clear();
       _offerPlans = const [];
       _offerDraft = null;
+      _pendingOffers = const [];
+      _offersSent = false;
+      // قرارُ تجاهل النقص يخصّ ملفاً بعينه — والملف التالي يُسأل عنه.
+      _gapsIgnored = false;
+      _priceListMode = false;
       _syncDone = 0;
       _syncTotal = 0;
       _progress = 0;
@@ -977,10 +1070,25 @@ class _WhImportInventoryPageState extends ConsumerState<WhImportInventoryPage> {
         noCoverage: (ref.watch(myServiceGovernoratesProvider).value ??
                 const [])
             .isEmpty,
+        gapsIgnored: _gapsIgnored,
+        onIgnoreGaps: () => setState(() => _gapsIgnored = true),
+        priceListMode: _priceListMode,
+        onPriceListChanged: (v) => setState(() {
+          _priceListMode = v;
+          // الخطّة المحرَّرة بُنيت على مجموعاتٍ أخرى — تُطرح لتُبنى
+          // من جديد، وإلا بقيت تُشير إلى شركاتٍ لم تعد كما كانت.
+          _offerDraft = null;
+        }),
         onEditOffers: groups.isEmpty ? null : () => _editOffers(groups),
       );
     } else {
-      body = _IdleView(onPick: _pick, error: _error, notice: _notice);
+      body = _IdleView(
+        onPick: _pick,
+        error: _error,
+        notice: _notice,
+        skipCatalog: _skipCatalog,
+        onModeChanged: (v) => setState(() => _skipCatalog = v),
+      );
     }
 
     return Scaffold(
@@ -1020,9 +1128,20 @@ class _WhImportInventoryPageState extends ConsumerState<WhImportInventoryPage> {
 
 // ── الحالة الأولى ────────────────────────────────────────────────────────
 class _IdleView extends StatelessWidget {
-  const _IdleView({required this.onPick, this.error, this.notice});
+  const _IdleView({
+    required this.onPick,
+    required this.skipCatalog,
+    required this.onModeChanged,
+    this.error,
+    this.notice,
+  });
 
   final VoidCallback onPick;
+
+  /// الوضع المختار: تخطّي مطابقة الكتالوج الوطني.
+  final bool skipCatalog;
+  final ValueChanged<bool> onModeChanged;
+
   final String? error;
 
   /// خبرٌ لا عطل (إلغاءٌ تمّ مثلاً) — بنبرةٍ محايدة لا حمراء: ما فعله
@@ -1039,7 +1158,10 @@ class _IdleView extends StatelessWidget {
           AppSpacing.page, AppSpacing.x2l, AppSpacing.page, AppSpacing.x3l),
       child: Center(
         child: ConstrainedBox(
-          constraints: const BoxConstraints(maxWidth: 480),
+          // عريضةٌ تسع بطاقتَي الوضع جنباً إلى جنب: كانت ٤٨٠ فتنزل
+          // الواحدة تحت الأخرى، فتُقرآن تِباعاً لا مقارنةً — وهما خياران
+          // يُقارَنان.
+          constraints: const BoxConstraints(maxWidth: 920),
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
@@ -1053,12 +1175,19 @@ class _IdleView extends StatelessWidget {
                   style: context.text.titleLarge, textAlign: TextAlign.center),
               const SizedBox(height: AppSpacing.sm),
               Text(
-                'ارفع ملف Excel، ويقرأ وكيل الـ AI أعمدته ويطابق أصنافه مع '
-                'الكتالوج الوطني — ولا يُضاف شيء لمخزونك قبل مراجعتك',
+                'ارفع ملف Excel، ويقرأ وكيل الـ AI أعمدته ويفصل العيار عن '
+                'الاسم — ولا يُضاف شيء لمخزونك قبل مراجعتك',
                 style: context.text.bodyMedium?.copyWith(color: tk.hint),
                 textAlign: TextAlign.center,
               ),
-              const SizedBox(height: AppSpacing.x2l),
+              const SizedBox(height: AppSpacing.xl),
+
+              // ── الوضع يُختار قبل الرفع ───────────────────────────────
+              // لا بعده: المطابقة مرحلةٌ تجري في الخادم أثناء التحليل،
+              // فلا تُلغى بأثرٍ رجعي. وعرضُها خيارين صريحين خيرٌ من
+              // إعدادٍ مخبوء — الفرق بينهما في الزمن والنتيجة كبير.
+              _ModeChooser(skipCatalog: skipCatalog, onChanged: onModeChanged),
+              const SizedBox(height: AppSpacing.xl),
 
               if (error != null) ...[
                 _NoticeCard(
@@ -1101,11 +1230,151 @@ class _IdleView extends StatelessWidget {
                     const SizedBox(height: AppSpacing.sm),
                     const _Hint('لا يلزم قالب معيّن — الوكيل يستنتج الأعمدة'),
                     const _Hint('يفصل العيار والشكل الدوائي عن اسم الدواء'),
+                    const _Hint('يقرأ الخصم والبونص والشركة فيُنشئ العروض'),
                     const _Hint('تراجع النتيجة قبل أن يُكتب شيء في مخزونك'),
                     const _Hint('الصيغ المدعومة: xlsx و csv'),
                   ],
                 ),
               ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// اختيار وضع الاستيراد: مع مطابقة الكتالوج الوطني أم بدونها.
+///
+/// بطاقتان متجاورتان لا مفتاحُ تبديل: الفرق بينهما ليس «ميزةً تُطفأ» بل
+/// مساران مختلفان في النتيجة والزمن — والمقارنة تحتاج أن يُقرأ الوصفان
+/// معاً، وهو ما لا يُتيحه مفتاح.
+class _ModeChooser extends StatelessWidget {
+  const _ModeChooser({required this.skipCatalog, required this.onChanged});
+
+  final bool skipCatalog;
+  final ValueChanged<bool> onChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        // تحت ٧٠٠ بكسل تنزل الواحدة تحت الأخرى: بطاقتان بعرض ٣٥٠ أضيق
+        // من ذلك تقطعان كل سطرٍ في وصفهما.
+        final side = constraints.maxWidth >= 700;
+
+        final cards = [
+          _ModeCard(
+            title: 'مع الكتالوج الوطني',
+            body: 'يطابق كل صنفٍ مع النشرة الوطنية فيُربَط بها — '
+                'فيظهر في بحث الأسعار المقارن لدى الصيدليات. '
+                'وما لا يجده يبقى صنفاً حرّاً تراجعه بنفسك.',
+            footnote: 'أدقّ · أبطأ · مطابقةٌ بالنموذج لغير المحسوم',
+            icon: AppIcons.pill,
+            selected: !skipCatalog,
+            onTap: () => onChanged(false),
+          ),
+          _ModeCard(
+            title: 'مخزوني وعروضي فقط',
+            body: 'بلا مطابقة: كل ما في الملف يدخل «أدويتي» باسمه وعياره '
+                'كما وردا، وتُنشأ منه العروض. ويجده استيرادُ الشهر القادم '
+                'فيُحدّث سعره بدل أن يُكرّره.',
+            footnote: 'أسرع · أرخص · بلا ربطٍ بالنشرة الوطنية',
+            icon: AppIcons.clipboardList,
+            selected: skipCatalog,
+            onTap: () => onChanged(true),
+          ),
+        ];
+
+        if (!side) {
+          return Column(
+            children: [
+              cards[0],
+              const SizedBox(height: AppSpacing.md),
+              cards[1],
+            ],
+          );
+        }
+
+        return Row(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Expanded(child: cards[0]),
+            const SizedBox(width: AppSpacing.md),
+            Expanded(child: cards[1]),
+          ],
+        );
+      },
+    );
+  }
+}
+
+class _ModeCard extends StatelessWidget {
+  const _ModeCard({
+    required this.title,
+    required this.body,
+    required this.footnote,
+    required this.icon,
+    required this.selected,
+    required this.onTap,
+  });
+
+  final String title;
+  final String body;
+  final String footnote;
+  final AppIcons icon;
+  final bool selected;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = context.colors;
+    final tk = context.tokens;
+
+    // غير المختار يبقى مقروءاً تماماً: هو خيارٌ متاح لا شيء مُستبعَد،
+    // وإخفاتُه يجعل المقارنة بينهما غير عادلة.
+    return Material(
+      color: selected ? tk.brandSurface : cs.surface,
+      borderRadius: BorderRadius.circular(AppRadius.lg),
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(AppRadius.lg),
+        child: Container(
+          padding: const EdgeInsets.all(AppSpacing.lg),
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(AppRadius.lg),
+            border: Border.all(
+              color: selected ? cs.primary.withValues(alpha: 0.6) : cs.outline,
+              width: selected ? 1.6 : 1,
+            ),
+          ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Row(
+                children: [
+                  AppCheckbox(
+                    selection:
+                        selected ? AppCheckState.all : AppCheckState.none,
+                  ),
+                  const SizedBox(width: AppSpacing.sm),
+                  AppIcon(icon,
+                      size: 16, color: selected ? cs.primary : tk.hint),
+                  const SizedBox(width: AppSpacing.xs),
+                  Expanded(
+                    child: Text(title,
+                        style: context.text.labelLarge,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis),
+                  ),
+                ],
+              ),
+              const SizedBox(height: AppSpacing.sm),
+              Text(body, style: context.text.bodySmall),
+              const SizedBox(height: AppSpacing.sm),
+              Text(footnote,
+                  style: context.text.labelSmall?.copyWith(color: tk.hint)),
             ],
           ),
         ),
@@ -2220,6 +2489,7 @@ class _SyncItemTile extends StatelessWidget {
 enum _RowFilter {
   all('الكل'),
   offers('بنود عرض'),
+  missingPrice('ناقص سعر'),
   newItem('جديد'),
   priceUpdate('تحديث سعر'),
   needsConfirm('يلزم تأكيد'),
@@ -2235,6 +2505,11 @@ enum _RowFilter {
         // جديداً أو تحديثَ سعر في آن. ولذلك لا تُحسَب في قسمة الأربعة،
         // وتُعرَض وحدها مجموعةً بالشركة.
         _RowFilter.offers => row.isOfferItem,
+
+        // و«ناقص سعر» كذلك تقطعها: ثغرةٌ لا تصنيفاً. وهي بنود العرض
+        // التي لا تستطيع أن تصير بنوداً — يُجمَعن هنا ليُملأ نقصُهنّ
+        // بنقرةٍ واحدة بدل البحث عنهنّ في مئة سطر.
+        _RowFilter.missingPrice => row.isOfferGap,
         _RowFilter.newItem => row.matchStatus == ImportMatch.matched,
         _RowFilter.priceUpdate => row.matchStatus == ImportMatch.owned,
         _RowFilter.needsConfirm => row.matchStatus == ImportMatch.ambiguous,
@@ -2244,6 +2519,7 @@ enum _RowFilter {
   StatusTone get tone => switch (this) {
         _RowFilter.all => StatusTone.neutral,
         _RowFilter.offers => StatusTone.brand,
+        _RowFilter.missingPrice => StatusTone.danger,
         _RowFilter.newItem => StatusTone.success,
         _RowFilter.priceUpdate => StatusTone.info,
         _RowFilter.needsConfirm => StatusTone.warning,
@@ -2261,12 +2537,28 @@ class _ReviewView extends StatefulWidget {
     required this.onEditPrice,
     required this.onApply,
     required this.onRestart,
+    required this.onIgnoreGaps,
+    required this.priceListMode,
+    required this.onPriceListChanged,
     this.error,
     this.offerCount = 0,
     this.offerCompanies = 0,
     this.noCoverage = false,
+    this.gapsIgnored = false,
     this.onEditOffers,
   });
+
+  /// أقرّ المستخدم أن يمضي رغم الثغرات — فتُطوى اللافتة ولا تُعاد.
+  ///
+  /// الحالة في الصفحة لا هنا: هذا المكوّن يُعاد بناؤه مع كل تبديل
+  /// تحديد، وقرارُ المستخدم يجب أن ينجو من ذلك.
+  final bool gapsIgnored;
+
+  final VoidCallback onIgnoreGaps;
+
+  /// الملف نشرة أسعار — فكل صنفٍ مسعَّرٍ بند عرض.
+  final bool priceListMode;
+  final ValueChanged<bool> onPriceListChanged;
 
   final ImportJob job;
   final List<ImportRow> rows;
@@ -2305,6 +2597,21 @@ class _ReviewViewState extends State<_ReviewView> {
 
     final selected = rows.where((r) => r.selected && r.isActionable).toList();
 
+    // بنود العرض المحدَّدة التي ينقصها سعرُها — ما لن يصل إلى أي عرض.
+    final gaps = rows.where((r) => r.isOfferGap).length;
+
+    // أصنافٌ مسعَّرة محدَّدة لا يراها الوكيل بنود عرض — مادّة نشرة
+    // الأسعار. وبلا هذا العدد لا معنى للعرض عليه.
+    final priceable =
+        rows.where((r) => r.selected && r.isActionable && !r.needsPrice).length;
+
+    // متى يُعرَض خيار نشرة الأسعار؟ حين لا يجد الوكيل بنداً تجارياً
+    // واحداً وفي الملف أسعار — وهي حال أكثر ما يصل المستودعات. وحين
+    // يكون الوضع مرفوعاً أصلاً، ليُطفأ.
+    final offersFound = rows.where((r) => r.isOfferItem).length;
+    final showPriceList =
+        widget.priceListMode || (offersFound == 0 && priceable > 0);
+
     // عدّاد لكل خانة — من كل الصفوف لا من المحدَّد وحده: هذه إجابة
     // «ماذا في الملف»، وشريط الأسفل يُجيب «ماذا ستُزامن».
     final counts = {
@@ -2342,6 +2649,35 @@ class _ReviewViewState extends State<_ReviewView> {
                   tone: StatusTone.danger,
                   title: 'تعذّرت المزامنة',
                   body: widget.error!,
+                ),
+              ],
+
+              // ── الثغرة تُقال قبل المزامنة لا بعدها ────────────────────
+              // الوكيل يملأ ما يجده، وما لا يجده يبقى ناقصاً — وبندُ
+              // عرضٍ بلا سعر يُطرَح في الخادم. فيُعرَض هنا بعدده
+              // وبطريقَي حسمه: يُملأ أو يُترك. وكان يُطرَح صامتاً،
+              // فيَعِد الشريطُ بعشرين بنداً ويصل منها سبعة عشر ولا أحد
+              // يعرف أين ذهبت الثلاثة.
+              // ── الملف نشرة أسعار؟ ────────────────────────────────────
+              // الوكيل يعرف العرض بخصمٍ أو بونص، وهذا صحيح — لكنّ نشرة
+              // الأسعار الصرف عرضٌ تامّ في السوق بلا علامةٍ يلتقطها.
+              // فكان الملفّ الأشيع يُخرج صفر عروضٍ بلا أن يُقال لماذا.
+              if (showPriceList) ...[
+                const SizedBox(height: AppSpacing.md),
+                _PriceListNotice(
+                  enabled: widget.priceListMode,
+                  itemCount: priceable,
+                  onChanged: widget.onPriceListChanged,
+                ),
+              ],
+
+              if (gaps > 0 && !widget.gapsIgnored) ...[
+                const SizedBox(height: AppSpacing.md),
+                _GapNotice(
+                  count: gaps,
+                  onFill: () =>
+                      setState(() => _filter = _RowFilter.missingPrice),
+                  onIgnore: widget.onIgnoreGaps,
                 ),
               ],
 
@@ -2483,6 +2819,169 @@ class _ReviewViewState extends State<_ReviewView> {
           ),
         ),
       ],
+    );
+  }
+}
+
+/// خيار «الملف نشرة أسعار» — يُعرَض حين لا يجد الوكيل عرضاً وفي الملف أسعار.
+///
+/// الوكيل يعرف بند العرض بخصمٍ أو بونص، وهو صادق فيما يرى: ذانك علامتا
+/// العرض. لكنّ أكثر ما يصل المستودعات نشرةُ أسعارٍ صرف — اسمٌ وسعرٌ
+/// وشركة — وهي عرضٌ تامّ في السوق بلا علامةٍ تُلتقَط.
+///
+/// فكان الملفّ الأشيع يُخرج صفر عروضٍ ولا يُقال لصاحبه لماذا. وهذا
+/// السؤال يُقال له، والجواب عنده: هو وحده يعرف أرفع نشرةَ أسعارٍ أم جرداً.
+class _PriceListNotice extends StatelessWidget {
+  const _PriceListNotice({
+    required this.enabled,
+    required this.itemCount,
+    required this.onChanged,
+  });
+
+  final bool enabled;
+  final int itemCount;
+  final ValueChanged<bool> onChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = context.colors;
+    final tk = context.tokens;
+
+    final fg = enabled ? cs.primary : tk.hint;
+
+    return Material(
+      color: enabled ? tk.brandSurface : cs.surface,
+      borderRadius: BorderRadius.circular(AppRadius.lg),
+      child: InkWell(
+        onTap: () => onChanged(!enabled),
+        borderRadius: BorderRadius.circular(AppRadius.lg),
+        child: Container(
+          padding: const EdgeInsets.symmetric(
+              horizontal: AppSpacing.lg, vertical: AppSpacing.md),
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(AppRadius.lg),
+            border: Border.all(
+              color: enabled ? cs.primary.withValues(alpha: 0.6) : cs.outline,
+              width: enabled ? 1.6 : 1,
+            ),
+          ),
+          child: Row(
+            children: [
+              AppCheckbox(
+                selection: enabled ? AppCheckState.all : AppCheckState.none,
+              ),
+              const SizedBox(width: AppSpacing.md),
+              AppIcon(AppIcons.gift, size: 18, color: fg),
+              const SizedBox(width: AppSpacing.sm),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Text('هذا الملف نشرة أسعار',
+                        style: context.text.labelMedium?.copyWith(color: fg)),
+                    const SizedBox(height: 2),
+                    Text(
+                      enabled
+                          ? 'كل صنفٍ مسعَّر بندُ عرض — $itemCount بنداً، '
+                              'مجموعةً بشركاتها.'
+                          : 'لا صنف في الملف يحمل خصماً أو بونصاً، فلا عرض '
+                              'يُنشأ منه. وإن كانت هذه نشرة أسعارك فعلّمها '
+                              'هنا، فتصير أصنافها الـ$itemCount بنودَ عرض.',
+                      style: context.text.bodySmall,
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// لافتةُ نقصٍ في الحقول اللازمة — بعددها وطريقَي حسمها.
+///
+/// الحقول اللازمة معروفةٌ عندنا لا عند الوكيل: بند العرض يلزمه سعرٌ
+/// موجب، والباقي له افتراضٌ صحيح (الكمية واحد، والوحدة «علبة»). وشغل
+/// الوكيل أن يجد ما في الملف — فإن لم يجد السعر فالنقص حقيقيّ لا خطأ
+/// قراءة، ولا يُسدّ برقمٍ نخترعه.
+///
+/// فيُقال لصاحب الملف: هذا عددُ ما ينقص، إمّا تُدخله وإمّا تمضي بدونه.
+/// وكان يُطرَح صامتاً في الخادم فلا يعرف أين ذهبت بنودُه.
+///
+/// وتخطيطها شريطٌ أفقي لا بطاقة: الشاشة عريضة، والعدّ والشرح والزرّان
+/// يسعون في سطرٍ واحد — فلا تدفع قائمةَ الأصناف تحت الطيّة وهي المقصودة.
+class _GapNotice extends StatelessWidget {
+  const _GapNotice({
+    required this.count,
+    required this.onFill,
+    required this.onIgnore,
+  });
+
+  final int count;
+  final VoidCallback onFill;
+  final VoidCallback onIgnore;
+
+  @override
+  Widget build(BuildContext context) {
+    final tk = context.tokens;
+    final cs = context.colors;
+
+    return Container(
+      padding: const EdgeInsets.symmetric(
+          horizontal: AppSpacing.lg, vertical: AppSpacing.md),
+      decoration: BoxDecoration(
+        color: tk.warningSurface,
+        borderRadius: BorderRadius.circular(AppRadius.lg),
+        border: Border.all(color: tk.warning.withValues(alpha: 0.35)),
+      ),
+      child: Row(
+        children: [
+          AppIcon(AppIcons.alertTriangle, size: 20, color: tk.warning),
+          const SizedBox(width: AppSpacing.md),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text(
+                  '$count ${count == 1 ? "بند عرضٍ ينقصه" : "بنود عرضٍ ينقصها"} '
+                  'السعر',
+                  style: context.text.labelMedium?.copyWith(color: tk.warning),
+                ),
+                const SizedBox(height: 2),
+                Text(
+                  'بند العرض يلزمه سعرٌ موجب — وهذه لم يجد الوكيل لها سعراً '
+                  'في الملف. تدخل أسعارها فتدخل العروض، أو تمضي بدونها '
+                  'فتبقى في «أدويتي» وحدها.',
+                  style: context.text.bodySmall?.copyWith(color: cs.onSurface),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(width: AppSpacing.lg),
+          SizedBox(
+            width: 150,
+            child: AppButton(
+              label: 'تجاهلها',
+              variant: AppButtonVariant.text,
+              onPressed: onIgnore,
+            ),
+          ),
+          const SizedBox(width: AppSpacing.sm),
+          SizedBox(
+            width: 190,
+            child: AppButton(
+              label: 'أدخل الأسعار',
+              variant: AppButtonVariant.outline,
+              appIcon: AppIcons.pencil,
+              onPressed: onFill,
+            ),
+          ),
+        ],
+      ),
     );
   }
 }
@@ -2655,8 +3154,13 @@ class _FilterBoard extends StatelessWidget {
     // الخانات الفارغة تُطرح: «يلزم تأكيد: ٠» ليس خبراً، ووجوده يُزاحم
     // ما يعني المستخدم. و«الكل» تبقى دائماً لأنها طريق العودة.
     final shown = [
-      // بنود العرض أولاً حين توجد: هي الخبر الجديد في الملف، وهي ما
-      // يقود إلى خطوة إنشاء العروض.
+      // الثغرة أولاً حين توجد: هي وحدها ما يحتاج يداً قبل المزامنة،
+      // وما عداها خبرٌ يُقرأ. وتقديمُ ما يُطلَب على ما يُعلَم قاعدةٌ
+      // لا ترتيبَ ذوق.
+      _RowFilter.missingPrice,
+
+      // ثم بنود العرض: هي الخبر الجديد في الملف، وهي ما يقود إلى خطوة
+      // إنشاء العروض.
       _RowFilter.offers,
       _RowFilter.newItem,
       _RowFilter.priceUpdate,
@@ -2667,38 +3171,47 @@ class _FilterBoard extends StatelessWidget {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        for (var i = 0; i < shown.length; i += 2) ...[
-          if (i > 0) const SizedBox(height: AppSpacing.sm),
-          Row(
-            children: [
-              Expanded(
-                child: _CountTile(
-                  value: counts[shown[i]] ?? 0,
-                  label: shown[i].label,
-                  icon: _iconFor(shown[i]),
-                  tone: shown[i].tone,
-                  active: active == shown[i],
-                  onTap: () => onPick(shown[i]),
-                ),
-              ),
-              const SizedBox(width: AppSpacing.sm),
-              // مكانٌ خالٍ لا بطاقةٌ ممدودة حين يكون العدد فردياً: المدّ
-              // يجعل الأخيرة ضعف أخواتها فتبدو أهمّ بلا سبب.
-              Expanded(
-                child: i + 1 < shown.length
-                    ? _CountTile(
-                        value: counts[shown[i + 1]] ?? 0,
-                        label: shown[i + 1].label,
-                        icon: _iconFor(shown[i + 1]),
-                        tone: shown[i + 1].tone,
-                        active: active == shown[i + 1],
-                        onTap: () => onPick(shown[i + 1]),
-                      )
-                    : const SizedBox.shrink(),
-              ),
-            ],
-          ),
-        ],
+        // ── صفٌّ واحد على سطح المكتب ───────────────────────────────────
+        // كانت عمودين ثابتين، فتنزل الست بطاقات في ثلاثة صفوف تأكل نصف
+        // الشاشة وتدفع قائمة الأصناف تحت الطيّة — وهي المقصودة. والشاشة
+        // عريضة تسعهنّ في سطر، فيُقرأ الملخّص كلّه بنظرةٍ واحدة.
+        LayoutBuilder(
+          builder: (context, constraints) {
+            // بطاقةٌ لكل ٢٠٠ بكسل: أضيق منها يقطع «خارج الكتالوج» سطرين.
+            final columns =
+                (constraints.maxWidth / 200).floor().clamp(2, shown.length);
+
+            return Column(
+              children: [
+                for (var i = 0; i < shown.length; i += columns) ...[
+                  if (i > 0) const SizedBox(height: AppSpacing.sm),
+                  Row(
+                    children: [
+                      for (var j = i; j < i + columns; j++) ...[
+                        if (j > i) const SizedBox(width: AppSpacing.sm),
+                        // مكانٌ خالٍ لا بطاقةٌ ممدودة حين لا يكتمل الصفّ:
+                        // المدّ يجعل الأخيرة ضعف أخواتها فتبدو أهمّ بلا
+                        // سبب.
+                        Expanded(
+                          child: j < shown.length
+                              ? _CountTile(
+                                  value: counts[shown[j]] ?? 0,
+                                  label: shown[j].label,
+                                  icon: _iconFor(shown[j]),
+                                  tone: shown[j].tone,
+                                  active: active == shown[j],
+                                  onTap: () => onPick(shown[j]),
+                                )
+                              : const SizedBox.shrink(),
+                        ),
+                      ],
+                    ],
+                  ),
+                ],
+              ],
+            );
+          },
+        ),
         if (active != _RowFilter.all) ...[
           const SizedBox(height: AppSpacing.md),
           Row(
@@ -2720,6 +3233,7 @@ class _FilterBoard extends StatelessWidget {
 
   static AppIcons _iconFor(_RowFilter f) => switch (f) {
         _RowFilter.offers => AppIcons.gift,
+        _RowFilter.missingPrice => AppIcons.alertTriangle,
         _RowFilter.newItem => AppIcons.plus,
         _RowFilter.priceUpdate => AppIcons.tag,
         _RowFilter.needsConfirm => AppIcons.alertTriangle,

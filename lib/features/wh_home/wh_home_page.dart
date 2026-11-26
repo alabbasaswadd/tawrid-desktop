@@ -104,6 +104,76 @@ class _WhHomePageState extends ConsumerState<WhHomePage> {
   List<SalesOfferSummary> get _expiringOffers =>
       _activeOffers.where((o) => isOfferExpiringSoon(o.expiresAt)).toList();
 
+  /// إجراءات اللوحة — عنوانٌ وشرحٌ وطريق.
+  ///
+  /// تُبنى هنا لا في المكوّن: بعضها يُعيد تحميل الصفحة عند العودة منها
+  /// (العرض المُنشأ والمخزون المستورَد يُغيّران العدّادات)، وذلك شأن
+  /// الصفحة لا شأن بطاقةٍ تُرسَم.
+  List<_HomeAction> _actions(BuildContext context) => [
+        _HomeAction(
+          title: 'إنشاء عرض جديد',
+          description:
+              'تنتقي أصنافاً من «أدويتي» وتضبط سعرها وبونصها ومدّتها '
+              'والمناطق التي تراه.',
+          icon: AppIcons.plus,
+          // الأوّلية للمستودع الذي لا عرض ساري له: هذه أوّل خطوةٍ
+          // تُدخله السوق، ومساواتُها ببقيّة البطاقات تُخفيها فيه.
+          primary: _activeOffers.isEmpty,
+          onTap: () async {
+            await context.push(TRoutes.whCreateOffer);
+            if (mounted) await _load(silent: true);
+          },
+        ),
+        _HomeAction(
+          title: 'استيراد مخزون من ملف',
+          description:
+              'ترفع ملف Excel فيقرأ الوكيل أعمدته ويُدخل أصنافه في '
+              '«أدويتي» — ويُنشئ العروض من خصومه وبونصاته.',
+          icon: AppIcons.fileImport,
+          primary: _activeOffers.isEmpty,
+          onTap: () async {
+            await context.push(TRoutes.whImportInventory);
+            if (mounted) await _load(silent: true);
+          },
+        ),
+        _HomeAction(
+          title: 'أدويتي',
+          description:
+              'قائمة ما تحمله وأسعاره. منها تُبنى العروض، وبها تظهر في '
+              'بحث الصيدليات عن سعر.',
+          icon: AppIcons.pill,
+          onTap: () => context.push(TRoutes.whMedicines),
+        ),
+        _HomeAction(
+          title: 'الطلبيات الواردة',
+          description:
+              'ما طلبته الصيدليات منك: تؤكّده وتجهّزه وتتابع تسليمه '
+              'حتى الإغلاق.',
+          icon: AppIcons.clipboardList,
+          badge: _newOrders > 0 ? '$_newOrders جديد' : null,
+          onTap: () => context.go(TRoutes.whOrders),
+        ),
+        _HomeAction(
+          title: 'طلبات التسعير',
+          description:
+              'صيدليات تطلب أسعاراً على أصنافٍ بعينها — تتقدّم بعرضك '
+              'قبل انتهاء المهلة.',
+          icon: AppIcons.fileText,
+          onTap: () => context.go(TRoutes.whTenders),
+        ),
+        _HomeAction(
+          title: 'عروضي',
+          description:
+              'ما نشرته ومسوّداتك التي تنتظر النشر — تُجدّد مدّتها '
+              'وتُلغيها وترى بنودها.',
+          icon: AppIcons.tag,
+          badge: _draftOffers.isNotEmpty
+              ? '${_draftOffers.length} مسوّدة'
+              : null,
+          onTap: () => context.push(TRoutes.whOffers),
+        ),
+      ];
+
   static String _greeting() {
     final h = DateTime.now().hour;
     if (h < 12) return 'صباح الخير،';
@@ -195,42 +265,22 @@ class _WhHomePageState extends ConsumerState<WhHomePage> {
           ),
         ],
 
-        const SizedBox(height: AppSpacing.md),
+        const SizedBox(height: AppSpacing.xl),
 
-        // إجراءان جنباً إلى جنب — الاستيراد ليس إعداداً مدفوناً في شاشةٍ
-        // داخلية: هو الطريق الذي يدخل به المخزون كلّه، فمكانه حيث يبدأ
-        // المستخدم يومه.
-        Row(
-          children: [
-            Expanded(
-              child: AppButton(
-                label: 'إنشاء عرض جديد',
-                variant: _activeOffers.isEmpty
-                    ? AppButtonVariant.filled
-                    : AppButtonVariant.outline,
-                appIcon: AppIcons.plus,
-                onPressed: () async {
-                  await context.push(TRoutes.whCreateOffer);
-                  if (mounted) await _load(silent: true);
-                },
-              ),
-            ),
-            const SizedBox(width: AppSpacing.md),
-            Expanded(
-              child: AppButton(
-                label: 'استيراد مخزون من ملف',
-                variant: AppButtonVariant.outline,
-                appIcon: AppIcons.fileImport,
-                onPressed: () async {
-                  await context.push(TRoutes.whImportInventory);
-                  if (mounted) await _load(silent: true);
-                },
-              ),
-            ),
-          ],
-        ),
+        // ── ماذا تريد أن تفعل؟ ────────────────────────────────────────
+        // كانت زرَّين بعنوانين مجرّدين. والعنوان وحده يكفي من يعرف
+        // الشاشة أصلاً، ولا يكفي من يفتحها أول مرّة: «استيراد مخزون من
+        // ملف» لا تقول إن الوكيل يقرأ الأعمدة ويُنشئ العروض، ولا تقول
+        // ما الفرق بينها وبين «إنشاء عرض».
+        //
+        // فصارت بطاقاتٍ تحت كلٍّ منها سطرُ شرح. والشاشة عريضة تسعها
+        // ثلاثاً في الصفّ — وهو موضعها الصحيح: لوحةُ عملٍ تُقرأ بنظرة،
+        // لا قائمةُ أزرارٍ تُمرَّر.
+        AppSectionHeader(title: 'ماذا تريد أن تفعل؟', appIcon: AppIcons.plus),
+        const SizedBox(height: AppSpacing.sm),
+        _ActionBoard(actions: _actions(context)),
 
-        const SizedBox(height: AppSpacing.lg),
+        const SizedBox(height: AppSpacing.xl),
         AppSectionHeader(
           title: 'الطلبات الجديدة',
           trailing: _SeeAllLink(onTap: () => context.go(TRoutes.whOrders)),
@@ -258,6 +308,162 @@ class _WhHomePageState extends ConsumerState<WhHomePage> {
               ),
             ),
       ],
+      ),
+    );
+  }
+}
+
+/// إجراءٌ في لوحة الرئيسية — عنوانٌ وشرحٌ وطريق.
+class _HomeAction {
+  const _HomeAction({
+    required this.title,
+    required this.description,
+    required this.icon,
+    required this.onTap,
+    this.primary = false,
+    this.badge,
+  });
+
+  final String title;
+
+  /// سطرٌ يقول ما يجري خلف الزرّ — لا إعادةُ صياغةٍ لعنوانه.
+  final String description;
+
+  final AppIcons icon;
+  final VoidCallback onTap;
+
+  /// إجراءٌ مُقدَّم — يُميَّز بسطحٍ وحدٍّ لا بحجمٍ أكبر.
+  final bool primary;
+
+  /// عددٌ ينتظر قراراً على هذا الطريق («٣ جديد»).
+  final String? badge;
+}
+
+/// شبكة الإجراءات — ثلاثٌ في الصفّ على المكتب، وواحدة على الضيّق.
+class _ActionBoard extends StatelessWidget {
+  const _ActionBoard({required this.actions});
+
+  final List<_HomeAction> actions;
+
+  @override
+  Widget build(BuildContext context) {
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        // ٣٠٠ بكسل أدنى عرضٍ يحتمله سطرا الشرح بلا قطعٍ في كل كلمة.
+        final columns = columnsFor(constraints.maxWidth, minTile: 300, max: 3);
+
+        return Column(
+          children: [
+            for (var i = 0; i < actions.length; i += columns) ...[
+              if (i > 0) const SizedBox(height: AppSpacing.md),
+              // stretch لا start: البطاقات في الصفّ الواحد تتساوى
+              // بأطولها، فلا يبقى أسفل القصيرة فراغٌ يكسر الشبكة.
+              IntrinsicHeight(
+                child: Row(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    for (var j = i; j < i + columns; j++) ...[
+                      if (j > i) const SizedBox(width: AppSpacing.md),
+                      Expanded(
+                        child: j < actions.length
+                            ? _ActionCard(action: actions[j])
+                            : const SizedBox.shrink(),
+                      ),
+                    ],
+                  ],
+                ),
+              ),
+            ],
+          ],
+        );
+      },
+    );
+  }
+}
+
+class _ActionCard extends StatelessWidget {
+  const _ActionCard({required this.action});
+
+  final _HomeAction action;
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = context.colors;
+    final tk = context.tokens;
+    final primary = action.primary;
+
+    return Material(
+      color: primary ? tk.brandSurface : cs.surface,
+      borderRadius: BorderRadius.circular(AppRadius.lg),
+      child: InkWell(
+        onTap: action.onTap,
+        borderRadius: BorderRadius.circular(AppRadius.lg),
+        child: Container(
+          padding: const EdgeInsets.all(AppSpacing.lg),
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(AppRadius.lg),
+            border: Border.all(
+              color: primary ? cs.primary.withValues(alpha: 0.6) : cs.outline,
+              width: primary ? 1.6 : 1,
+            ),
+          ),
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              // الأيقونة في مربّعٍ ملوّن: تُميّز البطاقة من بعيد، فتُعرَف
+              // الشبكة بالشكل قبل أن تُقرأ بالنصّ.
+              Container(
+                width: 40,
+                height: 40,
+                decoration: BoxDecoration(
+                  color: primary
+                      ? cs.primary.withValues(alpha: 0.14)
+                      : cs.surfaceContainerHighest,
+                  borderRadius: BorderRadius.circular(AppRadius.md),
+                ),
+                alignment: Alignment.center,
+                child: AppIcon(action.icon, size: 18, color: cs.primary),
+              ),
+              const SizedBox(width: AppSpacing.md),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Row(
+                      children: [
+                        Flexible(
+                          child: Text(action.title,
+                              style: context.text.labelLarge,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis),
+                        ),
+                        if (action.badge != null) ...[
+                          const SizedBox(width: AppSpacing.sm),
+                          StatusBadge(
+                            label: action.badge!,
+                            tone: StatusTone.brand,
+                          ),
+                        ],
+                      ],
+                    ),
+                    const SizedBox(height: AppSpacing.xs),
+                    Text(
+                      action.description,
+                      style: context.text.bodySmall?.copyWith(color: tk.hint),
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(width: AppSpacing.sm),
+              Padding(
+                padding: const EdgeInsets.only(top: 2),
+                child: AppIcon(AppIcons.chevronForwardRtl,
+                    size: 14, color: tk.hint),
+              ),
+            ],
+          ),
+        ),
       ),
     );
   }

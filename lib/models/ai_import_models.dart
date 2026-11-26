@@ -213,6 +213,27 @@ class ImportRow {
   /// صنفٌ حرّ — يُضاف بهويّته لا بمرجعٍ في الكتالوج.
   bool get isCatalogFree => matched == null;
 
+  /// ينقص الصفَّ سعرُه.
+  ///
+  /// السعر وحده هو الحقل الذي لا افتراض له. الكمية تُقرأ واحداً حين
+  /// تغيب، والوحدة «علبة»، والاسم شرطُ الصفّ أصلاً ([isActionable]) —
+  /// أمّا السعر فرقمٌ مخترَع فيه يُلزم صاحب المستودع ببيعٍ لم يقصده.
+  ///
+  /// وهو في المخزون اختياري: صنفٌ بلا سعرٍ يبقى في «أدويتي» بياناً
+  /// تعريفياً. لكنّه في بند العرض شرطٌ لا يُتجاوَز.
+  bool get needsPrice => (price ?? 0) <= 0;
+
+  /// صالحٌ ليصير بند عرض.
+  ///
+  /// ما لا يجتازه يبقى في المخزون ولا يدخل العرض. وكان يدخله بسعر صفر
+  /// فيُسقط عرض شركته كلّها عند التحقّق — فصار يُطرَح، ويُقال لصاحبه
+  /// أنه طُرح ولماذا، بدل أن يختفي صامتاً.
+  bool get canBeOfferItem => isOfferItem && isActionable && !needsPrice;
+
+  /// بندُ عرضٍ محدَّدٌ ينقصه سعرُه — ثغرةٌ تُعرَض للمستخدم ليملأها أو
+  /// يتجاهلها، لا لتُطوى عنه.
+  bool get isOfferGap => isOfferItem && isActionable && selected && needsPrice;
+
   factory ImportRow.fromJson(Map<String, dynamic> j) => ImportRow(
         id: j['id'] as String,
         rowNumber: (j['rowNumber'] as num?)?.toInt() ?? 0,
@@ -386,12 +407,20 @@ class ImportJob {
     this.usage = const ImportUsage(),
     this.rows = const [],
     this.createdOn,
+    this.skipCatalogMatching = false,
   });
 
   final String jobId;
   final String fileName;
   final ImportStatus status;
   final int totalRows;
+
+  /// رُفع الملف بطلب تخطّي الكتالوج — فكل صفوفه أصنافٌ حرّة.
+  ///
+  /// تُقرأ في المراجعة لتُقال الحقيقة: «خارج الكتالوج: ٧٦٠» في المسار
+  /// العادي خبرُ عطبٍ يستدعي التدقيق، وهنا هو المطلوب نفسه — والعدّاد
+  /// وحده لا يفرّق بينهما.
+  final bool skipCatalogMatching;
   final int analyzedRows;
   final int matchedRows;
 
@@ -417,6 +446,7 @@ class ImportJob {
         jobId: j['jobId'] as String,
         fileName: j['fileName'] as String? ?? '',
         status: ImportStatus.fromCode((j['status'] as num?)?.toInt()),
+        skipCatalogMatching: j['skipCatalogMatching'] as bool? ?? false,
         totalRows: (j['totalRows'] as num?)?.toInt() ?? 0,
         analyzedRows: (j['analyzedRows'] as num?)?.toInt() ?? 0,
         matchedRows: (j['matchedRows'] as num?)?.toInt() ?? 0,
@@ -556,6 +586,33 @@ class ImportOfferFailure {
       );
 }
 
+/// حصيلة خطوة إنشاء العروض — ردّ النداء التالي للتطبيق.
+///
+/// منفصلٌ عن [ImportReport] لأن الخطوتين منفصلتان في الخادم: التطبيق
+/// يكتب المخزون ويعود، وهذا يُنادى بعده. وتُدمَج حصيلتُه في التقرير
+/// بـ [ImportReport.withOffers] فيُعرَض الاثنان معاً.
+class ImportOffersResult {
+  const ImportOffersResult({
+    this.offers = const [],
+    this.failures = const [],
+  });
+
+  final List<ImportCreatedOffer> offers;
+  final List<ImportOfferFailure> failures;
+
+  factory ImportOffersResult.fromJson(Map<String, dynamic> j) =>
+      ImportOffersResult(
+        offers: ((j['offers'] as List?) ?? const [])
+            .whereType<Map<String, dynamic>>()
+            .map(ImportCreatedOffer.fromJson)
+            .toList(),
+        failures: ((j['offerFailures'] as List?) ?? const [])
+            .whereType<Map<String, dynamic>>()
+            .map(ImportOfferFailure.fromJson)
+            .toList(),
+      );
+}
+
 /// ما يُرسَل لإنشاء عرضٍ من بنود شركة.
 ///
 /// الاستهداف والتواريخ تأتي من المستخدم لا من الملف: ملفُّ أسعارٍ لا
@@ -569,6 +626,7 @@ class ImportOfferPlan {
     this.expiresAt,
     this.isPublicInRegion = true,
     this.description,
+    this.includeAllItems = false,
   });
 
   final String company;
@@ -578,6 +636,14 @@ class ImportOfferPlan {
   final bool isPublicInRegion;
   final List<TargetRegion> targetRegions;
   final String? description;
+
+  /// يضمّ كل أصناف الشركة لا حَمَلةَ الخصم والبونص وحدهم.
+  ///
+  /// «ما هو بند عرض؟» سؤالٌ لا يملك الوكيل جوابه: هو يرى خصماً أو
+  /// بونصاً فيعرفه عرضاً — وأكثر ما يصل المستودعات نشرةُ أسعارٍ صرف
+  /// بلا علامةٍ يلتقطها. فالقرار لصاحب المستودع: هو وحده يعرف أرفع
+  /// نشرةَ أسعارٍ أم جرداً.
+  final bool includeAllItems;
 
   Map<String, dynamic> toJson() => {
         'company': company,
@@ -593,6 +659,7 @@ class ImportOfferPlan {
                 })
             .toList(),
         if (description != null) 'description': description,
+        if (includeAllItems) 'includeAllItems': true,
       };
 }
 
@@ -623,6 +690,35 @@ class ImportReport {
 
   int get total => added.length + modified.length;
   bool get hasFailures => failed.isNotEmpty || offerFailures.isNotEmpty;
+
+  /// يدمج حصيلة خطوة العروض في تقرير المخزون.
+  ///
+  /// الخطوتان منفصلتان في الخادم ويُعرضان معاً: المستخدم زامن ملفاً
+  /// واحداً، وتقريران عنه تجزئةٌ لا تعنيه.
+  ImportReport withOffers(ImportOffersResult result) => ImportReport(
+        jobId: jobId,
+        added: added,
+        modified: modified,
+        failed: failed,
+        skippedCount: skippedCount,
+        offers: result.offers,
+        offerFailures: result.failures,
+      );
+
+  /// يُسجّل تعذّر خطوة العروض كلّها — عطلُ طريقٍ لا رفضُ عرضٍ بعينه.
+  ///
+  /// يُقال ولا يُكتَم: المخزون كُتب والعروض لم تُنشأ، وهي حالةٌ وسطى
+  /// يحتاج صاحبها أن يعرفها ليُنشئها من شاشة العروض.
+  ImportReport withOfferError(String message) => ImportReport(
+        jobId: jobId,
+        added: added,
+        modified: modified,
+        failed: failed,
+        skippedCount: skippedCount,
+        offerFailures: [
+          ImportOfferFailure(company: '', message: message),
+        ],
+      );
 
   factory ImportReport.fromJson(Map<String, dynamic> j) => ImportReport(
         jobId: j['jobId'] as String,

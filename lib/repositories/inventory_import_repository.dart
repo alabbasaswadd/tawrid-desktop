@@ -18,13 +18,20 @@ class InventoryImportRepository {
   final ApiClient _api;
 
   /// يرفع الملف ويُنشئ المهمة. يعود فوراً — التحليل يجري خلفياً.
+  ///
+  /// [skipCatalogMatching] يتخطّى مطابقة الكتالوج الوطني، فتصير المزامنة
+  /// مع المخزون والعروض وحدهما: كل صفٍّ يدخل «أدويتي» صنفاً حرّاً باسمه
+  /// وعياره. ويُسقط ذلك مرحلةَ مطابقةٍ كاملة ونداءات مراجعتها.
   Future<ImportStarted> start({
     required List<int> bytes,
     required String fileName,
+    bool skipCatalogMatching = false,
     void Function(int sent, int total)? onProgress,
   }) async {
     final data = await _api.postFile(
-      ApiEndpoints.whImport,
+      skipCatalogMatching
+          ? '${ApiEndpoints.whImport}?skipCatalogMatching=true'
+          : ApiEndpoints.whImport,
       bytes: bytes,
       fileName: fileName,
       onProgress: onProgress,
@@ -65,18 +72,16 @@ class InventoryImportRepository {
   /// يكتب المختار في «أدويتي» ويُعيد ماذا أُضيف وماذا عُدِّل.
   ///
   /// الصفوف تُمرَّر صريحةً دائماً: لا يُكتب في مخزون أحدٍ ما لم يره ويوافق.
-  /// [offers] عروضٌ تُنشأ مسوّدةً من بنود الملف، واحدٌ لكل شركة أقرّها
-  /// المستخدم. فارغةً لا يُنشأ عرض — وهو الوضع الطبيعي لملف جردٍ صرف.
+  /// ولا عروض هنا — تلك [createOffers] بعده.
   ///
-  /// مهلته طويلةٌ عمداً: الكتابة تمرّ على كل صنفٍ مختار ثم تُنشئ العروض،
-  /// وملفٌ بمئتي صنفٍ يأخذ دقائق. والمهلة العامة (ثلاثون ثانية) كانت
-  /// تقطع الطلب والخادم ما زال يكتب — فيُسقِط الردّ لا العمل.
+  /// مهلته طويلةٌ عمداً: الكتابة تمرّ على كل صنفٍ مختار، وملفٌ بمئتي
+  /// صنفٍ يأخذ دقائق. والمهلة العامة (ثلاثون ثانية) كانت تقطع الطلب
+  /// والخادم ما زال يكتب — فيُسقِط الردّ لا العمل.
   Future<ImportReport> apply(
     String jobId, {
     required List<String> selectedRowIds,
     Map<String, double?> priceOverrides = const {},
     Map<String, String> catalogOverrides = const {},
-    List<ImportOfferPlan> offers = const [],
   }) async {
     final data = await _api.post(
       ApiEndpoints.whImportApply(jobId),
@@ -84,12 +89,34 @@ class InventoryImportRepository {
         'selectedRowIds': selectedRowIds,
         if (priceOverrides.isNotEmpty) 'priceOverrides': priceOverrides,
         if (catalogOverrides.isNotEmpty) 'catalogOverrides': catalogOverrides,
-        if (offers.isNotEmpty)
-          'offers': offers.map((o) => o.toJson()).toList(),
       },
       receiveTimeout: const Duration(minutes: 20),
     ) as Map<String, dynamic>;
 
     return ImportReport.fromJson(data);
+  }
+
+  /// يُنشئ العروض من مهمةٍ طُبِّقت — واحدٌ لكل شركة أقرّها المستخدم.
+  ///
+  /// نداءٌ مستقلّ بعد [apply] لا حقلٌ فيه. وكان حقلاً فيه ولم يصل قطّ:
+  /// جسم الطلب في الخادم لم يكن يحمل العروض، فكانت تُرسَل وتُسقَط بصمت —
+  /// ولم يُنشأ عرضٌ واحد من استيراد قطّ.
+  ///
+  /// وفصلُه يُصلح أكثر: ردُّ التطبيق يعود حين يفرغ المخزون، وما تعذّر من
+  /// العروض يُعاد طلبه وحده بلا إعادة رفع الملف.
+  ///
+  /// ليس آمناً للتكرار: نداؤه مرّتين يُنشئ عرضين. الشاشة تُناديه مرّةً
+  /// لكل تطبيق.
+  Future<ImportOffersResult> createOffers(
+    String jobId,
+    List<ImportOfferPlan> offers,
+  ) async {
+    final data = await _api.post(
+      ApiEndpoints.whImportOffers(jobId),
+      data: {'offers': offers.map((o) => o.toJson()).toList()},
+      receiveTimeout: const Duration(minutes: 10),
+    ) as Map<String, dynamic>;
+
+    return ImportOffersResult.fromJson(data);
   }
 }
