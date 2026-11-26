@@ -14,6 +14,7 @@ import 'package:tawrid_app/shared/widgets/barcode_scanner_page.dart';
 import 'package:tawrid_app/shared/utils/money.dart';
 import 'package:tawrid_app/shared/widgets/app_states.dart';
 import 'package:tawrid_app/core/state/inventory_revision.dart';
+import 'package:tawrid_app/shared/utils/export.dart';
 
 // أدوية مستودعي (Figma: المستودع / أدوية مستودعي).
 //
@@ -263,6 +264,19 @@ class _WhMedicinesPageState extends ConsumerState<WhMedicinesPage> {
       appBar: AppBar(
         title: const Text('أدوية مستودعي'),
         actions: [
+          // التصدير أوّل الإجراءات: قائمةُ أسعارٍ تُرسَل إلى صيدليةٍ أو
+          // تُراجَع في Excel هي أكثر ما يُطلَب من هذه الشاشة.
+          ExportButton<WarehouseMedicine>(
+            compact: true,
+            fileName: 'أدويتي',
+            title: 'أدوية مستودعي',
+            sheetName: 'أدويتي',
+            facts: [
+              (label: 'عدد الأصناف', value: '${(_items ?? const []).length}'),
+            ],
+            columns: _medicineColumns(),
+            rows: _items ?? const [],
+          ),
           // زر الكتالوج العام: حدٌّ بلون العلامة — ثانوي لا رئيسي.
           Padding(
             padding: const EdgeInsets.symmetric(horizontal: AppSpacing.sm),
@@ -376,6 +390,64 @@ class _WhMedicinesPageState extends ConsumerState<WhMedicinesPage> {
     if (shown < _total) return 'عُرض $shown من $_total صنفاً في مستودعك';
     return '$shown ${shown == 1 ? 'دواء' : 'دواءً'} في مستودعك';
   }
+
+  /// أعمدة تصدير «أدويتي».
+  ///
+  /// السعر الخام لا المصوغ في عمود Excel: صاحبه يُرتّب به ويجمعه،
+  /// والنصّ المصوغ لا يُرتَّب إلا أبجدياً.
+  static List<ExportColumn<WarehouseMedicine>> _medicineColumns() => [
+        ExportColumn(
+          header: 'الصنف',
+          value: (m) => m.displayName,
+          width: 34,
+          pdfFlex: 5,
+        ),
+        ExportColumn(
+          header: 'المادة الفعّالة',
+          value: (m) => m.genericName,
+          width: 26,
+          pdfFlex: 4,
+        ),
+        ExportColumn(
+          header: 'الشركة',
+          value: (m) => m.manufacturerName,
+          width: 20,
+          pdfFlex: 3,
+        ),
+        ExportColumn(
+          header: 'العيار',
+          value: (m) => m.strength > 0 ? m.strength : '',
+          text: (m) => m.strength > 0 ? formatQuantity(m.strength) : '—',
+          width: 10,
+        ),
+        ExportColumn(
+          header: 'الشكل',
+          value: (m) => m.dosageForm.label,
+          width: 12,
+        ),
+        ExportColumn(
+          header: 'كود ساكو',
+          value: (m) => m.sakoCode,
+          width: 12,
+        ),
+        ExportColumn(
+          header: 'السعر',
+          value: (m) => m.effectivePrice ?? '',
+          text: (m) => m.effectivePrice == null
+              ? 'بلا سعر'
+              : formatMoneyWith(m.effectivePrice!, m.currency),
+          width: 14,
+        ),
+        ExportColumn(
+          header: 'مصدر السعر',
+          // الفرق مهمّ عند المراجعة: المشتقّ يتبدّل مع النشرة الوطنية،
+          // واليدوي لا يتبدّل إلا بيد صاحبه.
+          value: (m) => m.effectivePrice == null
+              ? 'غير مسعَّر'
+              : (m.isDerivedPrice ? 'مشتقّ' : 'يدوي'),
+          width: 12,
+        ),
+      ];
 
   Widget _buildList(List<WarehouseMedicine> items) {
     if (_loading) return const AppListSkeleton(variant: SkeletonVariant.row);

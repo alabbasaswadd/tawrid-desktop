@@ -143,7 +143,16 @@ class SalesOfferItem {
     this.discountPercentage,
     this.bonusPercentage,
     this.bonusTiers = const [],
+    this.isActive = true,
   });
+
+  /// هل القلم معروضٌ الآن؟
+  ///
+  /// المعطَّل يبقى في العرض عند صاحبه ولا يصل الصيدلي — لا في بحثه،
+  /// ولا في سلّته، ولا في عدّاد البطاقة. وهو ما يفعله المستودع حين
+  /// ينفد صنفٌ من عشرين: يُعطّله ويبقى العرض قائماً، بدل إلغائه
+  /// وإنشائه من جديد فتضيع تعليقاته.
+  final bool isActive;
 
   factory SalesOfferItem.fromJson(Map<String, dynamic> j) => SalesOfferItem(
         id: j['id'] as String,
@@ -156,6 +165,7 @@ class SalesOfferItem {
         discountPercentage: (j['discountPercentage'] as num?)?.toDouble(),
         bonusPercentage: (j['bonusPercentage'] as num?)?.toDouble(),
         bonusTiers: BonusTier.listFromJson(j['bonusTiers']),
+        isActive: j['isActive'] as bool? ?? true,
       );
 
   Map<String, dynamic> toCreateJson() => {

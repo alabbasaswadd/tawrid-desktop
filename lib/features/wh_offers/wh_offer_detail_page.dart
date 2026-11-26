@@ -3,10 +3,12 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:tawrid_app/app/theme/app_spacing.dart';
 import 'package:tawrid_app/app/theme/app_tokens_ext.dart';
 import 'package:tawrid_app/core/network/api_exception.dart';
+import 'package:tawrid_app/models/bonus_tier.dart';
 import 'package:tawrid_app/models/enums.dart';
 import 'package:tawrid_app/models/sales_offer_models.dart';
 import 'package:tawrid_app/repositories/sales_offer_repository.dart';
 import 'package:tawrid_app/shared/ui/ui.dart';
+import 'package:tawrid_app/shared/utils/export.dart';
 import 'package:tawrid_app/shared/utils/money.dart';
 import 'package:tawrid_app/shared/utils/relative_time.dart';
 import 'package:tawrid_app/shared/widgets/app_states.dart';
@@ -61,6 +63,343 @@ class _WhOfferDetailPageState extends ConsumerState<WhOfferDetailPage> {
       });
     }
   }
+
+  /// أقلامٌ يجري تعديلها الآن — لتُعطَّل صفوفُها بدل تجميد الشاشة كلّها.
+  ///
+  /// تبديلُ قلمٍ لا يصحّ أن يُوقف العرض كلّه: صاحبه قد يُعطّل ثلاثة
+  /// تِباعاً، وشاشةٌ تتجمّد عند كل نقرة تجعله ينتظر ثلاث مرات.
+  final Set<String> _savingItems = {};
+
+  /// يُرسل تعديلاً على قلمٍ واحد ويُحدّث العرض من الردّ.
+  ///
+  /// الردّ هو العرض كاملاً، فتُعاد الشاشة من مصدرٍ واحد بلا دمجٍ يدوي
+  /// يفترق عن الخادم عند أول حقلٍ يُضاف.
+  Future<void> _updateItem(
+    SalesOfferItem item, {
+    double? unitPrice,
+    double? discountPercentage,
+    double? quantity,
+    List<BonusTier>? bonusTiers,
+    bool clearBonus = false,
+    bool? isActive,
+    String? done,
+  }) async {
+    if (_savingItems.contains(item.id)) return;
+    setState(() => _savingItems.add(item.id));
+
+    try {
+      final updated =
+          await ref.read(salesOfferRepositoryProvider).updateOfferItem(
+                widget.offerId,
+                item.id,
+                unitPrice: unitPrice,
+                discountPercentage: discountPercentage,
+                quantity: quantity,
+                bonusTiers: bonusTiers,
+                clearBonus: clearBonus,
+                isActive: isActive,
+              );
+      if (!mounted) return;
+      setState(() => _offer = updated);
+      if (done != null) AppSnackbar.success(context, done);
+    } catch (e) {
+      if (!mounted) return;
+      AppSnackbar.error(context, ApiException.from(e).message);
+    } finally {
+      if (mounted) setState(() => _savingItems.remove(item.id));
+    }
+  }
+
+  /// حوار تعديل سعر القلم وحسمه.
+  Future<void> _editPrice(SalesOfferItem item) async {
+    final currency = _offer!.currency;
+    final price = TextEditingController(text: formatForInput(item.unitPrice));
+    final discount = TextEditingController(
+      text: (item.discountPercentage ?? 0) > 0
+          ? formatForInput(item.discountPercentage!)
+          : '',
+    );
+
+    final saved = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: ctx.colors.surface,
+        title: const Text('تعديل السعر'),
+        content: SizedBox(
+          width: 380,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(item.medicineName, style: ctx.text.titleSmall),
+              const SizedBox(height: AppSpacing.lg),
+              AppTextField(
+                controller: price,
+                label: 'سعر الوحدة (${currencySymbol(currency)})',
+                autofocus: true,
+                keyboardType:
+                    const TextInputType.numberWithOptions(decimal: true),
+              ),
+              const SizedBox(height: AppSpacing.md),
+              AppTextField(
+                controller: discount,
+                label: 'نسبة الحسم ٪',
+                hint: 'اتركه فارغاً لإلغاء الحسم',
+                keyboardType:
+                    const TextInputType.numberWithOptions(decimal: true),
+              ),
+              const SizedBox(height: AppSpacing.sm),
+              Text(
+                'الصافي هو ما يراه الصيدلي ويُحسَب في سلّته.',
+                style: ctx.text.labelSmall,
+              ),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('تراجع'),
+          ),
+          FilledButton(
+            onPressed: () {
+              final p = parseDecimalInput(price.text);
+              if (p == null || p <= 0) {
+                AppSnackbar.error(ctx, 'أدخل سعراً أكبر من صفر');
+                return;
+              }
+
+              // الحسم الفارغ قرارٌ صريح بإلغائه لا «لا تمسّه»: الحقل
+              // معروضٌ بقيمته، وإفراغُه فعلٌ مقصود.
+              final d = discount.text.trim().isEmpty
+                  ? 0.0
+                  : parseDecimalInput(discount.text);
+              if (d == null || d < 0 || d > 100) {
+                AppSnackbar.error(ctx, 'نسبة الحسم بين صفر ومئة');
+                return;
+              }
+
+              Navigator.pop(ctx, true);
+            },
+            child: const Text('حفظ'),
+          ),
+        ],
+      ),
+    );
+
+    final newPrice = parseDecimalInput(price.text);
+    final newDiscount = discount.text.trim().isEmpty
+        ? 0.0
+        : parseDecimalInput(discount.text);
+
+    price.dispose();
+    discount.dispose();
+
+    if (saved != true || newPrice == null) return;
+
+    await _updateItem(
+      item,
+      unitPrice: newPrice,
+      discountPercentage: newDiscount,
+      done: 'حُفظ السعر',
+    );
+  }
+
+  /// حوار تعديل بونص القلم — شريحةٌ واحدة «اشترِ N فتأخذ M».
+  ///
+  /// شريحةٌ واحدة لا سلّم: هذا ما تُنتجه ملفات المستودعات («١٠+١»)،
+  /// وهو ما يفهمه الصيدلي. والسلّم المتعدّد يبقى في شاشة إنشاء العرض
+  /// لمن يبنيه بيده.
+  Future<void> _editBonus(SalesOfferItem item) async {
+    final first = item.bonusTiers.isNotEmpty ? item.bonusTiers.first : null;
+    final buy = TextEditingController(
+      text: first != null ? formatForInput(first.buyQuantity) : '',
+    );
+    final free = TextEditingController(
+      text: first != null ? formatForInput(first.freeQuantity) : '',
+    );
+
+    final result = await showDialog<String>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: ctx.colors.surface,
+        title: const Text('تعديل البونص'),
+        content: SizedBox(
+          width: 380,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(item.medicineName, style: ctx.text.titleSmall),
+              const SizedBox(height: AppSpacing.lg),
+              Row(
+                children: [
+                  Expanded(
+                    child: AppTextField(
+                      controller: buy,
+                      label: 'اشترِ',
+                      autofocus: true,
+                      keyboardType: const TextInputType.numberWithOptions(
+                          decimal: true),
+                    ),
+                  ),
+                  const SizedBox(width: AppSpacing.md),
+                  Expanded(
+                    child: AppTextField(
+                      controller: free,
+                      label: 'فتأخذ مجاناً',
+                      keyboardType: const TextInputType.numberWithOptions(
+                          decimal: true),
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: AppSpacing.sm),
+              Text(
+                'مثال: اشترِ ١٠ فتأخذ ١ — تُحسَب على كامل الكمية في سلّة '
+                'الصيدلي.',
+                style: ctx.text.labelSmall,
+              ),
+            ],
+          ),
+        ),
+        actions: [
+          if (item.hasBonus)
+            TextButton(
+              onPressed: () => Navigator.pop(ctx, 'clear'),
+              child: Text('إزالة البونص',
+                  style: TextStyle(color: ctx.tokens.danger)),
+            ),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('تراجع'),
+          ),
+          FilledButton(
+            onPressed: () {
+              final b = parseDecimalInput(buy.text);
+              final f = parseDecimalInput(free.text);
+              if (b == null || f == null || b <= 0 || f <= 0) {
+                AppSnackbar.error(ctx, 'أدخل كميتين أكبر من صفر');
+                return;
+              }
+              Navigator.pop(ctx, 'save');
+            },
+            child: const Text('حفظ'),
+          ),
+        ],
+      ),
+    );
+
+    final b = parseDecimalInput(buy.text);
+    final f = parseDecimalInput(free.text);
+
+    buy.dispose();
+    free.dispose();
+
+    if (result == 'clear') {
+      await _updateItem(item, clearBonus: true, done: 'أُزيل البونص');
+      return;
+    }
+
+    if (result != 'save' || b == null || f == null) return;
+
+    await _updateItem(
+      item,
+      // التسمية تُبنى هنا وتُعاد من الخادم بعد الحفظ — وهذه نسخةُ
+      // الإرسال، لا تصل الشاشة.
+      bonusTiers: [
+        BonusTier(
+          buyQuantity: b,
+          freeQuantity: f,
+          label: '${formatForInput(b)} + ${formatForInput(f)}',
+        ),
+      ],
+      done: 'حُفظ البونص',
+    );
+  }
+
+  /// حقائق العرض في ترويسة الـ PDF.
+  static List<PdfFact> _exportFacts(SalesOfferDetail o) {
+    final active = o.items.where((i) => i.isActive).length;
+
+    return [
+      (label: 'الأصناف', value: '${o.items.length}'),
+      if (active != o.items.length)
+        (label: 'المعروض منها', value: '$active'),
+      (label: 'العملة', value: currencySymbol(o.currency)),
+      (
+        label: 'السريان',
+        value: o.expiresAt == null
+            ? 'عرض ثابت'
+            : '${formatSmartTimestamp(o.startsAt)} → '
+                '${formatSmartTimestamp(o.expiresAt!)}'
+      ),
+      (
+        label: 'المناطق',
+        value: o.targetRegions.isEmpty
+            ? 'كل مناطق الخدمة'
+            : '${o.targetRegions.map((r) => r.governorate).toSet().length} محافظة'
+      ),
+    ];
+  }
+
+  /// أعمدة جدول أصناف العرض — للتصديرين معاً.
+  ///
+  /// القيمة الخام تذهب إلى Excel ليُجمَع عمود السعر ويُرتَّب، والنصّ
+  /// المصوغ إلى PDF. ولذلك لا تُبنى النصوص مرّتين.
+  static List<ExportColumn<SalesOfferItem>> _itemColumns(String currency) => [
+        ExportColumn(
+          header: 'الصنف',
+          value: (i) => i.medicineName,
+          width: 34,
+          pdfFlex: 5,
+        ),
+        ExportColumn(
+          header: 'الشركة',
+          value: (i) => i.manufacturerName ?? '',
+          width: 18,
+          pdfFlex: 3,
+        ),
+        ExportColumn(
+          header: 'الكمية',
+          value: (i) => i.quantity <= 0 ? 'مفتوحة' : i.quantity,
+          text: (i) => i.quantity <= 0
+              ? 'مفتوحة'
+              : '${formatQuantity(i.quantity)} ${i.unit}',
+          width: 12,
+        ),
+        ExportColumn(
+          header: 'سعر الوحدة',
+          value: (i) => i.unitPrice,
+          text: (i) => formatMoneyWith(i.unitPrice, currency),
+          width: 13,
+        ),
+        ExportColumn(
+          header: 'الحسم ٪',
+          value: (i) => i.discountPercentage ?? 0,
+          text: (i) => (i.discountPercentage ?? 0) > 0
+              ? '${formatQuantity(i.discountPercentage!)}٪'
+              : '—',
+          width: 10,
+        ),
+        ExportColumn(
+          header: 'الصافي',
+          value: (i) => _netUnitPrice(i),
+          text: (i) => formatMoneyWith(_netUnitPrice(i), currency),
+          width: 13,
+        ),
+        ExportColumn(
+          header: 'البونص',
+          value: (i) => i.bonusLabel ?? '',
+          text: (i) => i.bonusLabel ?? '—',
+          width: 14,
+        ),
+        ExportColumn(
+          header: 'الحالة',
+          value: (i) => i.isActive ? 'معروض' : 'غير معروض',
+          width: 12,
+        ),
+      ];
 
   void _openChat() {
     final repo = ref.read(salesOfferRepositoryProvider);
@@ -128,10 +467,25 @@ class _WhOfferDetailPageState extends ConsumerState<WhOfferDetailPage> {
         title: 'تفاصيل العرض',
         trailing: _offer == null
             ? null
-            : IconButton(
-                tooltip: 'التعليقات',
-                icon: const Icon(Icons.chat_bubble_outline, size: 20),
-                onPressed: _openChat,
+            : Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  ExportButton<SalesOfferItem>(
+                    compact: true,
+                    fileName: 'عرض-${_offer!.title}',
+                    title: _offer!.title,
+                    subtitle: 'أصناف العرض — ${_offer!.warehouseName}',
+                    sheetName: 'أصناف العرض',
+                    facts: _exportFacts(_offer!),
+                    columns: _itemColumns(_offer!.currency),
+                    rows: _offer!.items,
+                  ),
+                  IconButton(
+                    tooltip: 'التعليقات',
+                    icon: const Icon(Icons.chat_bubble_outline, size: 20),
+                    onPressed: _openChat,
+                  ),
+                ],
               ),
       ),
       body: _buildBody(),
@@ -160,7 +514,17 @@ class _WhOfferDetailPageState extends ConsumerState<WhOfferDetailPage> {
         final wide = constraints.maxWidth >= 1100;
 
         final side = _SidePanel(offer: o);
-        final main = _MainColumn(offer: o);
+        final main = _MainColumn(
+          offer: o,
+          saving: _savingItems,
+          onToggle: (item) => _updateItem(
+            item,
+            isActive: !item.isActive,
+            done: item.isActive ? 'عُطّل الصنف' : 'فُعّل الصنف',
+          ),
+          onEditPrice: _editPrice,
+          onEditBonus: _editBonus,
+        );
 
         if (!wide) {
           return ListView(
@@ -387,9 +751,22 @@ class _Fact extends StatelessWidget {
 
 /// العمود الرئيسي — جدول الأصناف.
 class _MainColumn extends StatelessWidget {
-  const _MainColumn({required this.offer});
+  const _MainColumn({
+    required this.offer,
+    required this.saving,
+    required this.onToggle,
+    required this.onEditPrice,
+    required this.onEditBonus,
+  });
 
   final SalesOfferDetail offer;
+
+  /// أقلامٌ يجري حفظها الآن — صفوفُها معطَّلة وحدها.
+  final Set<String> saving;
+
+  final ValueChanged<SalesOfferItem> onToggle;
+  final ValueChanged<SalesOfferItem> onEditPrice;
+  final ValueChanged<SalesOfferItem> onEditBonus;
 
   @override
   Widget build(BuildContext context) {
@@ -421,6 +798,10 @@ class _MainColumn extends StatelessWidget {
               index: i + 1,
               item: items[i],
               currency: offer.currency,
+              saving: saving.contains(items[i].id),
+              onToggle: () => onToggle(items[i]),
+              onEditPrice: () => onEditPrice(items[i]),
+              onEditBonus: () => onEditBonus(items[i]),
             ),
         ],
       ],
@@ -447,13 +828,14 @@ class _ItemsHeader extends StatelessWidget {
       ),
       child: Row(
         children: [
+          SizedBox(width: 56, child: Text('معروض', style: style)),
           SizedBox(width: 40, child: Text('#', style: style)),
           Expanded(flex: 5, child: Text('الصنف', style: style)),
           SizedBox(width: 110, child: Text('الكمية', style: style)),
           SizedBox(width: 100, child: Text('سعر الوحدة', style: style)),
           SizedBox(width: 80, child: Text('الحسم', style: style)),
           SizedBox(width: 110, child: Text('الصافي', style: style)),
-          SizedBox(width: 120, child: Text('البونص', style: style)),
+          SizedBox(width: 130, child: Text('البونص', style: style)),
         ],
       ),
     );
@@ -465,106 +847,257 @@ class _ItemRow extends StatelessWidget {
     required this.index,
     required this.item,
     required this.currency,
+    required this.saving,
+    required this.onToggle,
+    required this.onEditPrice,
+    required this.onEditBonus,
   });
 
   final int index;
   final SalesOfferItem item;
   final String currency;
 
+  /// يجري حفظ هذا القلم الآن — صفُّه وحده يُعطَّل.
+  final bool saving;
+
+  final VoidCallback onToggle;
+  final VoidCallback onEditPrice;
+  final VoidCallback onEditBonus;
+
   @override
   Widget build(BuildContext context) {
     final cs = context.colors;
     final tk = context.tokens;
     final discount = item.discountPercentage ?? 0;
+    final off = !item.isActive;
 
-    return Container(
-      decoration: BoxDecoration(
-        color: index.isEven
-            ? cs.surfaceContainerHighest.withValues(alpha: 0.35)
-            : cs.surface,
-        border: Border(
-          left: BorderSide(color: cs.outline),
-          right: BorderSide(color: cs.outline),
-          bottom: BorderSide(color: cs.outline),
+    // ── المعطَّل يُخفَت ولا يُخفى ──────────────────────────────────────
+    // صاحبه يراه ليُعيد تفعيله متى عاد الصنف، والصيدلي لا يراه أصلاً
+    // (الخادم يحجبه). وإخفاؤه هنا يجعل إعادة التفعيل مستحيلة.
+    final dim = off ? 0.45 : 1.0;
+
+    return Opacity(
+      opacity: saving ? 0.6 : 1,
+      child: Container(
+        decoration: BoxDecoration(
+          color: index.isEven
+              ? cs.surfaceContainerHighest.withValues(alpha: 0.35)
+              : cs.surface,
+          border: Border(
+            left: BorderSide(color: cs.outline),
+            right: BorderSide(color: cs.outline),
+            bottom: BorderSide(color: cs.outline),
+          ),
+        ),
+        padding: const EdgeInsets.symmetric(
+            horizontal: AppSpacing.md, vertical: AppSpacing.xs),
+        child: Row(
+          children: [
+            // ── مفتاح العرض ───────────────────────────────────────────
+            // أوّل عمودٍ لأنه أعلى القرارات: ما لا يُعرَض لا يعني سعرُه
+            // ولا بونصه شيئاً.
+            SizedBox(
+              width: 56,
+              child: Align(
+                alignment: AlignmentDirectional.centerStart,
+                child: saving
+                    ? const SizedBox(
+                        width: 16,
+                        height: 16,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      )
+                    : Transform.scale(
+                        scale: 0.8,
+                        alignment: AlignmentDirectional.centerStart,
+                        child: Switch(
+                          value: item.isActive,
+                          onChanged: (_) => onToggle(),
+                        ),
+                      ),
+              ),
+            ),
+            SizedBox(
+              width: 40,
+              child: Text('$index',
+                  style: context.text.labelSmall?.copyWith(color: tk.hint)),
+            ),
+            Expanded(
+              flex: 5,
+              child: Opacity(
+                opacity: dim,
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Row(
+                      children: [
+                        Flexible(
+                          child: Text(item.medicineName,
+                              style: context.text.labelMedium,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis),
+                        ),
+                        if (off) ...[
+                          const SizedBox(width: AppSpacing.sm),
+                          StatusBadge(
+                            label: 'غير معروض',
+                            tone: StatusTone.neutral,
+                          ),
+                        ],
+                      ],
+                    ),
+                    if ((item.manufacturerName ?? '').isNotEmpty)
+                      Text(item.manufacturerName!,
+                          style:
+                              context.text.labelSmall?.copyWith(color: tk.hint),
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis),
+                  ],
+                ),
+              ),
+            ),
+            SizedBox(
+              width: 110,
+              child: Opacity(
+                opacity: dim,
+                child: Text(
+                  // الكمية صفراً تعني مفتوحة لا معدومة — وعرضُها «٠» يقول
+                  // للصيدلي إنه لا شيء متاح، وهو عكس المقصود.
+                  item.quantity <= 0
+                      ? 'مفتوحة'
+                      : '${formatQuantity(item.quantity)} ${item.unit}',
+                  style: context.text.labelSmall,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ),
+            ),
+
+            // ── السعر والحسم: خليّةٌ واحدة تُنقَر ──────────────────────
+            // لأنهما يُحرَّران معاً: «الحسم ١٥٪» لا معنى له بلا السعر
+            // الذي يُحسَم منه، وحواران منفصلان يجعلان تصحيح الاثنين
+            // نقرتين وحفظين.
+            _EditableCell(
+              onTap: onEditPrice,
+              tooltip: 'تعديل السعر والحسم',
+              child: Row(
+                children: [
+                  SizedBox(
+                    width: 100,
+                    child: Opacity(
+                      opacity: dim,
+                      child: Text(
+                        formatMoneyWith(item.unitPrice, currency),
+                        style: discount > 0
+                            ? context.text.labelSmall?.copyWith(
+                                color: tk.hint,
+                                decoration: TextDecoration.lineThrough,
+                              )
+                            : context.text.labelSmall,
+                      ),
+                    ),
+                  ),
+                  SizedBox(
+                    width: 80,
+                    child: Opacity(
+                      opacity: dim,
+                      child: discount > 0
+                          ? Text('${formatQuantity(discount)}٪',
+                              style: context.text.labelSmall
+                                  ?.copyWith(color: tk.success))
+                          : Text('—',
+                              style: context.text.labelSmall
+                                  ?.copyWith(color: tk.hint)),
+                    ),
+                  ),
+                  SizedBox(
+                    width: 110,
+                    child: Opacity(
+                      opacity: dim,
+                      child: Text(
+                          formatMoneyWith(_netUnitPrice(item), currency),
+                          style: context.priceBrandStyle),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+
+            _EditableCell(
+              onTap: onEditBonus,
+              tooltip: 'تعديل البونص',
+              child: SizedBox(
+                width: 130,
+                child: Opacity(
+                  opacity: dim,
+                  child: item.hasBonus
+                      ? Align(
+                          alignment: AlignmentDirectional.centerStart,
+                          child: BonusBadge(
+                              label: item.bonusLabel!, compact: true),
+                        )
+                      : Text('— أضف',
+                          style:
+                              context.text.labelSmall?.copyWith(color: tk.hint)),
+                ),
+              ),
+            ),
+          ],
         ),
       ),
-      padding: const EdgeInsets.symmetric(
-          horizontal: AppSpacing.md, vertical: AppSpacing.sm),
-      child: Row(
-        children: [
-          SizedBox(
-            width: 40,
-            child: Text('$index',
-                style: context.text.labelSmall?.copyWith(color: tk.hint)),
+    );
+  }
+}
+
+/// خليّةٌ تُنقَر فتُحرَّر — بقلمٍ ثابتٍ باهت.
+///
+/// ── لماذا ثابتٌ لا يظهر بالمرور؟ ──────────────────────────────────────
+/// كان يظهر بالمرور عبر `MouseRegion` تُبدّل الحالة، فيتبدّل عرض الصفّ
+/// بين إطارٍ وآخر. وذاك وحده مقبول — لكنّ الحوار الذي يفتحه النقر
+/// يسحب التركيز، فتصل `onExit` بعد أن بُني الحوار فوق الشجرة، ويُطلَب
+/// تخطيطٌ من عنصرٍ يُفكَّك:
+///
+///     RenderFlex overflowed by 99373 pixels
+///     '_dependents.isEmpty': is not true
+///
+/// والشاشة تُغطّى بالأحمر بعد نقرةٍ واحدة على خليّة السعر.
+///
+/// والقلم الباهت الثابت يُؤدّي الغرض نفسه — يقول «هذه تُنقَر» — بلا
+/// حالةٍ تتبدّل أصلاً. وهو أبسط: `StatelessWidget` لا حالة فيه تُفكّ.
+class _EditableCell extends StatelessWidget {
+  const _EditableCell({
+    required this.child,
+    required this.onTap,
+    required this.tooltip,
+  });
+
+  final Widget child;
+  final VoidCallback onTap;
+  final String tooltip;
+
+  @override
+  Widget build(BuildContext context) {
+    final tk = context.tokens;
+
+    return Tooltip(
+      message: tooltip,
+      waitDuration: const Duration(milliseconds: 600),
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(AppRadius.sm),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(
+              horizontal: AppSpacing.xs, vertical: AppSpacing.xs),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              child,
+              const SizedBox(width: AppSpacing.xs),
+              AppIcon(AppIcons.pencil,
+                  size: 11, color: tk.hint.withValues(alpha: 0.7)),
+            ],
           ),
-          Expanded(
-            flex: 5,
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Text(item.medicineName,
-                    style: context.text.labelMedium,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis),
-                if ((item.manufacturerName ?? '').isNotEmpty)
-                  Text(item.manufacturerName!,
-                      style: context.text.labelSmall?.copyWith(color: tk.hint),
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis),
-              ],
-            ),
-          ),
-          SizedBox(
-            width: 110,
-            child: Text(
-              // الكمية صفراً تعني مفتوحة لا معدومة — وعرضُها «٠» يقول
-              // للصيدلي إنه لا شيء متاح، وهو عكس المقصود.
-              item.quantity <= 0
-                  ? 'مفتوحة'
-                  : '${item.quantity.toStringAsFixed(0)} ${item.unit}',
-              style: context.text.labelSmall,
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-            ),
-          ),
-          SizedBox(
-            width: 100,
-            child: Text(
-              formatMoneyWith(item.unitPrice, currency),
-              style: discount > 0
-                  ? context.text.labelSmall?.copyWith(
-                      color: tk.hint,
-                      decoration: TextDecoration.lineThrough,
-                    )
-                  : context.text.labelSmall,
-            ),
-          ),
-          SizedBox(
-            width: 80,
-            child: discount > 0
-                ? Text('${discount.toStringAsFixed(0)}٪',
-                    style:
-                        context.text.labelSmall?.copyWith(color: tk.success))
-                : Text('—',
-                    style: context.text.labelSmall?.copyWith(color: tk.hint)),
-          ),
-          SizedBox(
-            width: 110,
-            child: Text(formatMoneyWith(_netUnitPrice(item), currency),
-                style: context.priceBrandStyle),
-          ),
-          SizedBox(
-            width: 120,
-            child: item.hasBonus
-                ? Align(
-                    alignment: AlignmentDirectional.centerStart,
-                    child: BonusBadge(label: item.bonusLabel!, compact: true),
-                  )
-                : Text('—',
-                    style: context.text.labelSmall?.copyWith(color: tk.hint)),
-          ),
-        ],
+        ),
       ),
     );
   }

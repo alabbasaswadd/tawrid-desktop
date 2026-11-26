@@ -15,6 +15,7 @@ import 'package:tawrid_app/repositories/sales_offer_repository.dart';
 import 'package:tawrid_app/repositories/warehouse_service_area_repository.dart';
 import 'package:tawrid_app/shared/ui/ui.dart';
 import 'package:tawrid_app/shared/utils/money.dart';
+import 'package:tawrid_app/shared/utils/export.dart';
 
 /// استيراد المخزون من ملف Excel بمساعدة وكيل الـ AI.
 ///
@@ -4114,6 +4115,7 @@ class _ReportViewState extends State<_ReportView> {
         _ReportHeader(
           ok: ok,
           report: report,
+          rows: all,
           publishing: widget.publishing,
           onDone: widget.onDone,
           onAgain: widget.onAgain,
@@ -4219,11 +4221,61 @@ class _ReportViewState extends State<_ReportView> {
       rows.any((r) => r.previousPrice != null);
 }
 
+/// أعمدة تصدير تقرير المزامنة.
+///
+/// رقم السطر في الملف أوّلاً: التقرير يُقرأ إلى جانب ملف Excel الأصلي،
+/// والسطر هو ما يربط بينهما.
+List<ExportColumn<_ReportRow>> _reportColumns() => [
+      ExportColumn(
+        header: 'السطر',
+        value: (r) => r.rowNumber,
+        width: 8,
+        pdfFlex: 1,
+      ),
+      ExportColumn(
+        header: 'الصنف',
+        value: (r) => r.name,
+        width: 40,
+        pdfFlex: 6,
+      ),
+      ExportColumn(
+        header: 'الشركة',
+        value: (r) => r.manufacturer,
+        width: 20,
+        pdfFlex: 3,
+      ),
+      ExportColumn(
+        header: 'السعر السابق',
+        value: (r) => r.previousPrice ?? '',
+        text: (r) => r.previousPrice == null ? '—' : _num(r.previousPrice!),
+        width: 13,
+      ),
+      ExportColumn(
+        header: 'السعر',
+        value: (r) => r.price ?? '',
+        text: (r) => r.price == null ? '—' : _num(r.price!),
+        width: 13,
+      ),
+      ExportColumn(
+        header: 'الحالة',
+        value: (r) => r.kind.label,
+        width: 14,
+      ),
+      ExportColumn(
+        header: 'السبب',
+        // للمتعذّر وحده — والباقي فارغ، فعمودٌ بسببٍ لكل سطرٍ ناجح ضجيج.
+        value: (r) => r.message ?? '',
+        width: 30,
+        pdfFlex: 4,
+      ),
+    ];
+
 /// ترويسة التقرير — الخلاصة والإجراءان، ثابتةٌ فوق المحتوى.
 class _ReportHeader extends StatelessWidget {
   const _ReportHeader({
     required this.ok,
     required this.report,
+    required this.rows,
     required this.publishing,
     required this.onDone,
     required this.onAgain,
@@ -4231,6 +4283,12 @@ class _ReportHeader extends StatelessWidget {
 
   final bool ok;
   final ImportReport report;
+
+  /// صفوف التقرير موحَّدةً — مادّة التصدير.
+  ///
+  /// تُمرَّر مبنيّةً لا تُبنى هنا: الشاشة تبنيها أصلاً لجدولها، وبناؤها
+  /// مرّتين يترك ترتيبين يفترقان.
+  final List<_ReportRow> rows;
   final bool publishing;
   final VoidCallback onDone;
   final VoidCallback onAgain;
@@ -4294,6 +4352,28 @@ class _ReportHeader extends StatelessWidget {
             const SizedBox(width: AppSpacing.lg),
           ],
 
+          // ── التصدير قبل المغادرة ────────────────────────────────────
+          // التقرير لا يُحفَظ: بمجرّد «عودة إلى أدويتي» يذهب ولا يُستعاد
+          // — والخادم لا يُبقي حصيلة الصفوف معروضة. فمن أراد سجلّاً لما
+          // زامنه يُصدّره هنا أو لا يُصدّره أبداً.
+          ExportButton<_ReportRow>(
+            fileName: 'تقرير-المزامنة',
+            title: 'تقرير مزامنة المخزون',
+            sheetName: 'التقرير',
+            facts: [
+              (label: 'أُضيف', value: '${report.added.length}'),
+              (label: 'عُدِّل سعره', value: '${report.modified.length}'),
+              if (report.failed.isNotEmpty)
+                (label: 'تعذّر', value: '${report.failed.length}'),
+              if (report.skippedCount > 0)
+                (label: 'بلا تغيير', value: '${report.skippedCount}'),
+              if (report.offers.isNotEmpty)
+                (label: 'العروض', value: '${report.offers.length}'),
+            ],
+            columns: _reportColumns(),
+            rows: rows,
+          ),
+          const SizedBox(width: AppSpacing.md),
           SizedBox(
             width: 170,
             child: AppButton(

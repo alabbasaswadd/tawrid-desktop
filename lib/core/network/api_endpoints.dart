@@ -141,6 +141,10 @@ abstract final class ApiEndpoints {
   static String whSalesOfferById(String id) => '$_wh/offers/$id';
   static String whSalesOfferPublish(String id) => '$_wh/offers/$id/publish';
   static String whSalesOfferCancel(String id) => '$_wh/offers/$id/cancel';
+
+  /// تعديل قلمٍ واحد في عرض — سعره وحسمه وبونصه، أو تفعيله وتعطيله.
+  static String whSalesOfferItem(String offerId, String itemId) =>
+      '$_wh/offers/$offerId/items/$itemId';
   static String whSalesOfferTargets(String id) => '$_wh/offers/$id/targets';
   static String whSalesOfferComments(String id) => '$_wh/offers/$id/comments';
   static String whSalesOfferCommentById(String id, String commentId) =>

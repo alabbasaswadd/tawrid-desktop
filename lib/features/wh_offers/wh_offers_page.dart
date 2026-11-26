@@ -14,6 +14,7 @@ import 'package:tawrid_app/shared/utils/relative_time.dart';
 import 'package:tawrid_app/shared/widgets/app_states.dart';
 import 'package:tawrid_app/shared/widgets/chat_sheet.dart';
 import 'package:tawrid_app/core/state/inventory_revision.dart';
+import 'package:tawrid_app/shared/utils/export.dart';
 
 // شرائح عروض المستودع (Figma): الكل، منشور، مسودة، متوقف، منتهٍ.
 enum _OffersTab {
@@ -98,6 +99,66 @@ class _WhOffersPageState extends ConsumerState<WhOffersPage> {
         _loading = false;
       });
     }
+  }
+
+  /// أعمدة تصدير قائمة العروض.
+  static List<ExportColumn<SalesOfferSummary>> _offerColumns() => [
+        ExportColumn(
+          header: 'العرض',
+          value: (o) => o.title,
+          width: 34,
+          pdfFlex: 5,
+        ),
+        ExportColumn(
+          header: 'الحالة',
+          value: (o) => switch (o.status) {
+            SalesOfferStatus.active => 'منشور',
+            SalesOfferStatus.draft => 'مسودة',
+            SalesOfferStatus.cancelled => 'متوقف',
+            SalesOfferStatus.expired => 'منتهٍ',
+          },
+          width: 12,
+        ),
+        ExportColumn(
+          header: 'الأصناف',
+          value: (o) => o.itemCount,
+          width: 10,
+        ),
+        ExportColumn(
+          header: 'النوع',
+          value: (o) => o.expiresAt == null ? 'ثابت' : 'مؤقّت',
+          width: 10,
+        ),
+        ExportColumn(
+          header: 'يبدأ',
+          value: (o) => _day(o.startsAt),
+          width: 13,
+        ),
+        ExportColumn(
+          header: 'ينتهي',
+          value: (o) => o.expiresAt == null ? 'بلا نهاية' : _day(o.expiresAt!),
+          width: 13,
+        ),
+        ExportColumn(
+          header: 'المناطق',
+          value: (o) => o.targetRegions.isEmpty
+              ? 'كل مناطق الخدمة'
+              : o.targetRegions.map((r) => r.label).join('، '),
+          width: 30,
+          pdfFlex: 4,
+        ),
+        ExportColumn(
+          header: 'بونص',
+          value: (o) => o.hasItemBonus || o.hasOfferBonus ? 'نعم' : '—',
+          width: 8,
+        ),
+      ];
+
+  /// تاريخٌ قصير للتصدير — لا «منذ ساعة»: الملف يُقرأ بعد شهر.
+  static String _day(DateTime d) {
+    final l = d.toLocal();
+    return '${l.year}/${l.month.toString().padLeft(2, '0')}/'
+        '${l.day.toString().padLeft(2, '0')}';
   }
 
   List<SalesOfferSummary> get _active => (_offers ?? const [])
@@ -193,6 +254,18 @@ class _WhOffersPageState extends ConsumerState<WhOffersPage> {
       appBar: AppBar(
         title: const Text('عروضي'),
         actions: [
+          ExportButton<SalesOfferSummary>(
+            compact: true,
+            fileName: 'عروضي',
+            title: 'عروض المستودع',
+            sheetName: 'العروض',
+            facts: [
+              (label: 'عدد العروض', value: '${(_offers ?? const []).length}'),
+              (label: 'السارية', value: '${_active.length}'),
+            ],
+            columns: _offerColumns(),
+            rows: _offers ?? const [],
+          ),
           IconButton(
             icon: const Icon(Icons.refresh),
             tooltip: 'تحديث',

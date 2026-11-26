@@ -11,6 +11,8 @@ import 'package:tawrid_app/models/supply_order_models.dart';
 import 'package:tawrid_app/repositories/supply_order_repository.dart';
 import 'package:tawrid_app/shared/ui/ui.dart';
 import 'package:tawrid_app/shared/widgets/app_states.dart';
+import 'package:tawrid_app/shared/utils/export.dart';
+import 'package:tawrid_app/shared/utils/money.dart';
 
 /// نغمة شارة حالة الطلبية عند المستودع — مشتركة مع الرئيسية والتفاصيل.
 StatusTone whOrderTone(SupplyOrderStatus s) => switch (s) {
@@ -117,6 +119,17 @@ class _WhOrdersPageState extends ConsumerState<WhOrdersPage> {
       appBar: AppBar(
         title: const Text('الطلبات الواردة'),
         actions: [
+          ExportButton<SupplyOrderSummary>(
+            compact: true,
+            fileName: 'الطلبيات-الواردة',
+            title: 'الطلبيات الواردة',
+            sheetName: 'الطلبيات',
+            facts: [
+              (label: 'عدد الطلبيات', value: '${(_orders ?? const []).length}'),
+            ],
+            columns: _orderColumns(),
+            rows: _orders ?? const [],
+          ),
           IconButton(
             icon: const Icon(Icons.refresh),
             tooltip: 'تحديث',
@@ -126,6 +139,63 @@ class _WhOrdersPageState extends ConsumerState<WhOrdersPage> {
       ),
       body: RefreshIndicator(onRefresh: _load, child: _buildBody()),
     );
+  }
+
+  /// أعمدة تصدير الطلبيات الواردة.
+  static List<ExportColumn<SupplyOrderSummary>> _orderColumns() => [
+        ExportColumn(
+          header: 'رقم الطلبية',
+          value: (o) => o.orderNumber,
+          width: 16,
+          pdfFlex: 3,
+        ),
+        ExportColumn(
+          header: 'الصيدلية',
+          value: (o) => o.pharmacyName ?? '',
+          width: 26,
+          pdfFlex: 4,
+        ),
+        ExportColumn(
+          header: 'المدينة',
+          value: (o) => o.pharmacyCity ?? '',
+          width: 14,
+        ),
+        ExportColumn(
+          header: 'الحالة',
+          value: (o) => o.status.label,
+          width: 14,
+        ),
+        ExportColumn(
+          header: 'الأصناف',
+          value: (o) => o.itemCount,
+          width: 9,
+        ),
+        ExportColumn(
+          header: 'الإجمالي',
+          value: (o) => o.totalAmount ?? '',
+          text: (o) => o.totalAmount == null
+              ? '—'
+              : formatMoneyWith(o.totalAmount!, o.currency),
+          width: 15,
+        ),
+        ExportColumn(
+          header: 'تاريخ الطلب',
+          value: (o) => _day(o.createdOn),
+          width: 13,
+        ),
+        ExportColumn(
+          header: 'التسليم المتوقّع',
+          value: (o) =>
+              o.expectedDeliveryDate == null ? '—' : _day(o.expectedDeliveryDate!),
+          width: 14,
+        ),
+      ];
+
+  /// تاريخٌ قصير للتصدير — لا «منذ ساعة»: الملف يُقرأ بعد شهر.
+  static String _day(DateTime d) {
+    final l = d.toLocal();
+    return '${l.year}/${l.month.toString().padLeft(2, '0')}/'
+        '${l.day.toString().padLeft(2, '0')}';
   }
 
   Widget _buildBody() {

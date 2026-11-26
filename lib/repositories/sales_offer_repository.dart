@@ -1,6 +1,7 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:tawrid_app/core/network/api_client.dart';
 import 'package:tawrid_app/core/network/api_endpoints.dart';
+import 'package:tawrid_app/models/bonus_tier.dart';
 import 'package:tawrid_app/models/enums.dart';
 import 'package:tawrid_app/models/sales_offer_models.dart';
 
@@ -129,6 +130,45 @@ class SalesOfferRepository {
   Future<void> publishOffer(String id) => _api.post(ApiEndpoints.whSalesOfferPublish(id));
 
   Future<void> cancelOffer(String id) => _api.post(ApiEndpoints.whSalesOfferCancel(id));
+
+  /// يُعدّل قلماً واحداً في عرضٍ قائم، ويُعيد العرض كاملاً.
+  ///
+  /// تعديلٌ جزئي: كل وسيطٍ فارغ يعني «لا تمسّه». ولولا ذلك لوجب أن
+  /// يُرسَل القلم كاملاً في كل نقرة، فيصير كل تبديلِ تفعيلٍ فرصةً
+  /// لمسح سعرٍ لم يُقصَد مسُّه.
+  ///
+  /// والردّ العرض كاملاً لا القلم: الشاشة تُعيد رسم جدولها من ردٍّ
+  /// واحد بلا دمجٍ يدوي يفترق عن الخادم عند أول حقلٍ يُضاف.
+  ///
+  /// [clearBonus] يُزيل البونص كلّه — عَلَمٌ صريحٌ لا قائمةٌ فارغة،
+  /// لأن الفارغة تعني «لا تمسّه».
+  Future<SalesOfferDetail> updateOfferItem(
+    String offerId,
+    String itemId, {
+    double? unitPrice,
+    double? discountPercentage,
+    double? quantity,
+    List<BonusTier>? bonusTiers,
+    bool clearBonus = false,
+    bool? isActive,
+  }) async {
+    final data = await _api.patch(
+      ApiEndpoints.whSalesOfferItem(offerId, itemId),
+      data: {
+        // `?` لا `if (… != null)`: الحذف هو ما يعني «لا تمسّه» في
+        // تعديلٍ جزئي، والمعنى واحد والكتابة أقصر.
+        'unitPrice': ?unitPrice,
+        'discountPercentage': ?discountPercentage,
+        'quantity': ?quantity,
+        if (bonusTiers != null)
+          'bonusTiers': bonusTiers.map((t) => t.toCreateJson()).toList(),
+        if (clearBonus) 'clearBonus': true,
+        'isActive': ?isActive,
+      },
+    ) as Map<String, dynamic>;
+
+    return SalesOfferDetail.fromJson(data);
+  }
 
   Future<void> addTargets(String id, List<String> tenantIds) =>
       _api.post(ApiEndpoints.whSalesOfferTargets(id), data: {'tenantIds': tenantIds});

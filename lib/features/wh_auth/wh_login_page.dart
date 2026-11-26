@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
+import 'package:tawrid_app/app/router/router.dart';
 import 'package:tawrid_app/app/router/routes.dart';
 import 'package:tawrid_app/app/theme/app_spacing.dart';
 import 'package:tawrid_app/app/theme/app_tokens_ext.dart';
@@ -91,18 +92,23 @@ class _WhLoginPageState extends ConsumerState<WhLoginPage> {
                   // اختيار نوع الحساب في الأعلى لا في ذيل الشاشة: من يفتح
                   // التطبيق يقرّر «من أنا» قبل أن يكتب بياناته، لا بعد أن
                   // يملأ حقلين ويكتشف زرّاً باهتاً تحت فاصل.
-                  AppSegmentedToggle(
-                    items: const [
-                      SegmentItem(label: 'صيدلية', icon: Icons.local_pharmacy_outlined),
-                      SegmentItem(label: 'مستودع', icon: Icons.warehouse_outlined),
-                    ],
-                    selected: 1,
-                    onChanged: (i) {
-                      if (i == 1) return;
-                      context.go(TRoutes.phLogin);
-                    },
-                  ),
-                  const SizedBox(height: AppSpacing.xl),
+                  //
+                  // ويُخفى حيث لا صيدلية: خيارٌ واحد ليس اختياراً، وزرُّ
+                  // «صيدلية» يقود إلى شاشةٍ ممنوعة تُعيده من حيث أتى.
+                  if (kPharmacyEnabled) ...[
+                    AppSegmentedToggle(
+                      items: const [
+                        SegmentItem(label: 'صيدلية', icon: Icons.local_pharmacy_outlined),
+                        SegmentItem(label: 'مستودع', icon: Icons.warehouse_outlined),
+                      ],
+                      selected: 1,
+                      onChanged: (i) {
+                        if (i == 1) return;
+                        context.go(TRoutes.phLogin);
+                      },
+                    ),
+                    const SizedBox(height: AppSpacing.xl),
+                  ],
 
                   Text('دخول المستودع', style: context.text.titleLarge),
                   const SizedBox(height: AppSpacing.xs),

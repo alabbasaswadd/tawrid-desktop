@@ -73,6 +73,23 @@ final _refreshNotifierProvider = Provider<_RouterRefreshNotifier>(
   (ref) => _RouterRefreshNotifier(ref),
 );
 
+/// هل يدعم هذا البناء واجهة الصيدلية؟
+///
+/// معطَّلٌ على ويندوز بطلب صاحب المنتج: تطبيق سطح المكتب للمستودع
+/// وحده، وواجهة الصيدلية تبقى للهاتف.
+///
+/// ولا تُحذَف شاشاتها: المشروع واحد يُبنى لمنصّتين، وحذفُ نصفه من
+/// أجل إحداهما يُلزم بإعادة كتابته للأخرى. فيُمنع الوصول إليها
+/// ويُحوَّل داخلُها إلى دخول المستودع — والعودة تبديلُ هذا الثابت.
+const bool kPharmacyEnabled = !_isDesktopOnlyWarehouse;
+
+// ثابتٌ وسيط ليبقى `kPharmacyEnabled` قابلاً للقراءة في سطرٍ واحد.
+const bool _isDesktopOnlyWarehouse = true;
+
+/// أين يذهب من لا جلسة له — ومن طلب شاشةً ممنوعة.
+const String _defaultLogin =
+    kPharmacyEnabled ? TRoutes.phLogin : TRoutes.whLogin;
+
 final routerProvider = Provider<GoRouter>((ref) {
   final refresh = ref.watch(_refreshNotifierProvider);
 
@@ -111,9 +128,9 @@ final routerProvider = Provider<GoRouter>((ref) {
         return loc == TRoutes.accountStatus ? null : TRoutes.accountStatus;
       }
       if (loc == TRoutes.accountStatus) {
-        if (phAuth) return TRoutes.phHome;
         if (whAuth) return TRoutes.whHome;
-        return TRoutes.phLogin;
+        if (kPharmacyEnabled && phAuth) return TRoutes.phHome;
+        return _defaultLogin;
       }
 
       // كلمة المرور ما زالت الافتراضية → لا شيء إلا شاشة تغييرها. الخادم
@@ -130,15 +147,25 @@ final routerProvider = Provider<GoRouter>((ref) {
             : TRoutes.forcePasswordChange;
       }
       if (loc == TRoutes.forcePasswordChange) {
-        if (phAuth) return TRoutes.phHome;
         if (whAuth) return TRoutes.whHome;
-        return TRoutes.phLogin;
+        if (kPharmacyEnabled && phAuth) return TRoutes.phHome;
+        return _defaultLogin;
       }
 
       if (loc == TRoutes.splash) {
-        if (phAuth) return TRoutes.phHome;
+        // المستودع أولاً: هو صاحب هذا البناء، وجلسةُ صيدليةٍ قديمة
+        // محفوظةٍ على الجهاز لا تصحّ وجهةً هنا.
         if (whAuth) return TRoutes.whHome;
-        return TRoutes.phLogin;
+        if (kPharmacyEnabled && phAuth) return TRoutes.phHome;
+        return _defaultLogin;
+      }
+
+      // ── شاشات الصيدلية ممنوعةٌ في بناء المستودع ─────────────────────
+      // دخولُها وتسجيلُها معاً: من فتحها برابطٍ محفوظ يُساق إلى دخول
+      // المستودع بدل شاشةٍ لا تُفيده.
+      if (!kPharmacyEnabled &&
+          (loc == TRoutes.phLogin || loc == TRoutes.phRegister)) {
+        return TRoutes.whLogin;
       }
 
       if (loc == TRoutes.phLogin || loc == TRoutes.phRegister) {
@@ -180,12 +207,13 @@ final routerProvider = Provider<GoRouter>((ref) {
           loc.split('/').length == 3;
       final isPhListingRoute = loc.startsWith('/listings/');
       final isPhConversationRoute = loc.startsWith('/conversations/');
-      if ((phRoutes.contains(loc) ||
-              isPhDetailRoute ||
-              isPhListingRoute ||
-              isPhConversationRoute) &&
-          !phAuth) {
-        return TRoutes.phLogin;
+      final isPharmacyScreen = phRoutes.contains(loc) ||
+          isPhDetailRoute ||
+          isPhListingRoute ||
+          isPhConversationRoute;
+
+      if (isPharmacyScreen && (!kPharmacyEnabled || !phAuth)) {
+        return _defaultLogin;
       }
 
       const whRoutes = {
