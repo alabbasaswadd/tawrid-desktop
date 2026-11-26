@@ -38,8 +38,8 @@ class _BonusTierDraft {
   bool get isEmpty => buy.text.trim().isEmpty && free.text.trim().isEmpty;
 
   BonusTier? toTier() {
-    final b = double.tryParse(buy.text.trim());
-    final f = double.tryParse(free.text.trim());
+    final b = parseDecimalInput(buy.text);
+    final f = parseDecimalInput(free.text);
     if (b == null || f == null || b <= 0 || f <= 0) return null;
     return BonusTier(buyQuantity: b, freeQuantity: f, label: '');
   }
@@ -259,11 +259,11 @@ class _WhCreateOfferPageState extends ConsumerState<WhCreateOfferPage> {
                 id: '',
                 medicineName: d.medicine.displayName,
                 catalogItemId: d.medicine.catalogItemId,
-                quantity: d.isOpenQuantity ? 0 : (double.tryParse(d.quantity.text.trim()) ?? 1),
+                quantity: d.isOpenQuantity ? 0 : (parseDecimalInput(d.quantity.text) ?? 1),
                 unit: d.unit.text.trim(),
-                unitPrice: double.tryParse(d.unitPrice.text) ?? 0,
+                unitPrice: parseDecimalInput(d.unitPrice.text) ?? 0,
                 discountPercentage:
-                    d.discount.text.trim().isEmpty ? null : double.tryParse(d.discount.text),
+                    d.discount.text.trim().isEmpty ? null : parseDecimalInput(d.discount.text),
                 bonusTiers: d.validTiers(),
               ))
           .toList();
@@ -282,7 +282,7 @@ class _WhCreateOfferPageState extends ConsumerState<WhCreateOfferPage> {
             isPublicInRegion: true,
             upfrontPercentage: _upfrontPercentage.text.trim().isEmpty
                 ? null
-                : double.tryParse(_upfrontPercentage.text),
+                : parseDecimalInput(_upfrontPercentage.text),
             paymentPeriodDays: _paymentPeriodDays.text.trim().isEmpty
                 ? null
                 : int.tryParse(_paymentPeriodDays.text),
@@ -292,7 +292,7 @@ class _WhCreateOfferPageState extends ConsumerState<WhCreateOfferPage> {
             bonusMedicineName: _bonusMedicine?.displayName,
             bonusMedicineCatalogItemId: _bonusMedicine?.catalogItemId,
             bonusMedicineQuantity:
-                _bonusMedicine == null ? null : (double.tryParse(_bonusQuantity.text) ?? 1),
+                _bonusMedicine == null ? null : (parseDecimalInput(_bonusQuantity.text) ?? 1),
             bonusMedicineUnit: _bonusMedicine == null ? null : _bonusUnit.text.trim(),
           );
 
@@ -635,7 +635,7 @@ class _OfferItemCardState extends State<_OfferItemCard> {
                         labelText: 'الكمية المتاحة', isDense: true),
                     validator: (v) {
                       if (draft.isOpenQuantity) return null;
-                      final q = double.tryParse((v ?? '').trim());
+                      final q = parseDecimalInput(v ?? '');
                       if (q == null || q <= 0) return 'كمية غير صالحة';
                       return null;
                     },
@@ -661,7 +661,7 @@ class _OfferItemCardState extends State<_OfferItemCard> {
                     controller: draft.unitPrice,
                     keyboardType: TextInputType.number,
                     decoration: const InputDecoration(labelText: 'سعر الوحدة', isDense: true),
-                    validator: (v) => (double.tryParse(v ?? '') ?? -1) < 0 ? 'مطلوب' : null,
+                    validator: (v) => (parseDecimalInput(v ?? '') ?? -1) < 0 ? 'مطلوب' : null,
                   ),
                 ),
                 const SizedBox(width: AppSpacing.xs),

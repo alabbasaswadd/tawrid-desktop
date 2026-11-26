@@ -14,11 +14,23 @@ class MultiRegionPicker extends StatelessWidget {
   const MultiRegionPicker({
     required this.regions,
     required this.onChanged,
+    this.maxVisible = 8,
     super.key,
   });
 
   final List<TargetRegion> regions;
   final ValueChanged<List<TargetRegion>> onChanged;
+
+  /// كم شريحةً تُعرَض قبل أن تُطوى البقيّة في «+ن أخرى».
+  ///
+  /// سقفٌ لا تجميل: مستودعٌ يخدم محافظةً كاملة يستهدف نحو مئة مدينة،
+  /// ومئةُ شريحةٍ في عمودٍ بعرض ٤٢٠ بكسل تُخرج الشريحةَ الأخيرة ألفين
+  /// وأربعمئة بكسل تحت قاع الشاشة — «BOTTOM OVERFLOWED BY 2422 PIXELS»
+  /// حرفياً، وتُغطّى الصفحة كلّها بالشريط الأصفر.
+  ///
+  /// والعدد الكامل لا يضيع: زرُّ التعديل يحمله، والنقر على «+ن أخرى»
+  /// يفتح القائمة كاملةً.
+  final int maxVisible;
 
   Future<void> _openSheet(BuildContext context) async {
     final result = await showModalBottomSheet<List<TargetRegion>>(
@@ -71,7 +83,7 @@ class MultiRegionPicker extends StatelessWidget {
             spacing: AppSpacing.xs,
             runSpacing: AppSpacing.xs,
             children: [
-              for (var i = 0; i < regions.length; i++)
+              for (var i = 0; i < regions.length && i < maxVisible; i++)
                 Chip(
                   label: Text(regions[i].label, style: GoogleFonts.tajawal(fontSize: 12.5)),
                   avatar: const Icon(Icons.location_on,
@@ -82,6 +94,22 @@ class MultiRegionPicker extends StatelessWidget {
                   },
                   backgroundColor: TawridColors.warehouse.withValues(alpha: 0.08),
                   side: BorderSide(color: TawridColors.warehouse.withValues(alpha: 0.2)),
+                  materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                ),
+
+              // ما بقي يُطوى في شريحةٍ واحدة تفتح القائمة.
+              //
+              // ولا تحمل زرّ حذف: «احذف ٩٢ منطقة» ليس قراراً يُتَّخذ
+              // بنقرةٍ واحدة بلا أن يُرى ما يُحذَف.
+              if (regions.length > maxVisible)
+                ActionChip(
+                  label: Text('+${regions.length - maxVisible} أخرى',
+                      style: GoogleFonts.tajawal(fontSize: 12.5)),
+                  onPressed: () => _openSheet(context),
+                  backgroundColor:
+                      TawridColors.warehouse.withValues(alpha: 0.04),
+                  side: BorderSide(
+                      color: TawridColors.warehouse.withValues(alpha: 0.2)),
                   materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
                 ),
             ],

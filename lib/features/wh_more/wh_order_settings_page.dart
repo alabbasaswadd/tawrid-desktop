@@ -71,10 +71,11 @@ class _WhOrderSettingsPageState extends ConsumerState<WhOrderSettingsPage> {
   }
 
   Future<void> _save() async {
-    final raw = _controller.text.trim().replaceAll(',', '');
+    final raw = _controller.text.trim();
     double? value;
     if (raw.isNotEmpty) {
-      value = double.tryParse(raw);
+      // الفاصلة عشريةٌ لا تُحذَف — انظر parseDecimalInput.
+      value = parseDecimalInput(raw);
       if (value == null || value <= 0) {
         AppSnackbar.error(
           context,

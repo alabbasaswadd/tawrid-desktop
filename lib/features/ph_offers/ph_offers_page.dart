@@ -14,6 +14,7 @@ import 'package:tawrid_app/shared/ui/ui.dart';
 import 'package:tawrid_app/shared/widgets/barcode_scanner_page.dart';
 import 'package:tawrid_app/shared/widgets/app_states.dart';
 import 'package:tawrid_app/shared/widgets/offer_summary_card.dart';
+import 'package:tawrid_app/shared/utils/money.dart';
 
 // الشرائح السريعة (Figma: فلاتر سريعة). ثلاث منها تنعكس على الخادم،
 // و«بونص عرض كامل» تنقية محلّية: الخادم يعرف `hasBonus` واحداً يجمع
@@ -516,8 +517,8 @@ class _FilterSheetState extends State<_FilterSheet> {
   }
 
   void _apply() {
-    final minV = double.tryParse(_min.text.trim());
-    final maxV = double.tryParse(_max.text.trim());
+    final minV = parseDecimalInput(_min.text);
+    final maxV = parseDecimalInput(_max.text);
     if (minV != null && maxV != null && minV > maxV) {
       AppSnackbar.error(context, 'الحد الأدنى أكبر من الحد الأعلى');
       return;

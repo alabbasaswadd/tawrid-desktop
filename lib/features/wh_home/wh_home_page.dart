@@ -153,14 +153,20 @@ class _WhHomePageState extends ConsumerState<WhHomePage> {
           badge: _newOrders > 0 ? '$_newOrders جديد' : null,
           onTap: () => context.go(TRoutes.whOrders),
         ),
-        _HomeAction(
-          title: 'طلبات التسعير',
-          description:
-              'صيدليات تطلب أسعاراً على أصنافٍ بعينها — تتقدّم بعرضك '
-              'قبل انتهاء المهلة.',
-          icon: AppIcons.fileText,
-          onTap: () => context.go(TRoutes.whTenders),
-        ),
+        // ── «طلبات التسعير» معلّقةٌ مؤقّتاً ───────────────────────────
+        // بطلب صاحب المنتج، ريثما يستقرّ شكلها. والشاشة نفسها قائمة
+        // ويُوصَل إليها من التبويبات — المحذوف مدخلُها من اللوحة لا هي.
+        //
+        // تُترك معلّقةً لا تُحذف: إعادتها سطرٌ يُنزَع تعليقه، وحذفُها
+        // يعني إعادة كتابة نصّها وأيقونتها وطريقها من جديد.
+        // _HomeAction(
+        //   title: 'طلبات التسعير',
+        //   description:
+        //       'صيدليات تطلب أسعاراً على أصنافٍ بعينها — تتقدّم بعرضك '
+        //       'قبل انتهاء المهلة.',
+        //   icon: AppIcons.fileText,
+        //   onTap: () => context.go(TRoutes.whTenders),
+        // ),
         _HomeAction(
           title: 'عروضي',
           description:

@@ -234,6 +234,24 @@ class ImportRow {
   /// يتجاهلها، لا لتُطوى عنه.
   bool get isOfferGap => isOfferItem && isActionable && selected && needsPrice;
 
+  /// هل في هذا الصفّ ما سيتغيّر فعلاً في «أدويتي»؟
+  ///
+  /// سؤالُ المزامنة الثانية. استيراد نفس النشرة شهرياً أمرٌ عادي،
+  /// وأكثرُ أسعارها لا يتبدّل — فملفٌ بسبعمئة صنفٍ قد لا يحمل جديداً
+  /// إلا في عشرين. وبلا تمييزٍ بينهما تُعرَض السبعمئة كلّها على صاحبها
+  /// ليبحث بعينه عن العشرين.
+  ///
+  /// والمملوك بسعرٍ مطابق ليس تغييراً: الخادم يسمه «تُخطّي» ولا يكتب
+  /// فيه شيئاً. وغيرُ المطابَق تغييرٌ لأنه سيُضاف صنفاً جديداً.
+  bool get willChange {
+    if (!isActionable) return false;
+    if (matchStatus != ImportMatch.owned) return true;
+
+    // مملوك: التغيير سعرٌ مختلف — ولا سعر في الملف يعني لا تغيير.
+    if (price == null) return false;
+    return previousPrice == null || (price! - previousPrice!).abs() > 0.0001;
+  }
+
   factory ImportRow.fromJson(Map<String, dynamic> j) => ImportRow(
         id: j['id'] as String,
         rowNumber: (j['rowNumber'] as num?)?.toInt() ?? 0,

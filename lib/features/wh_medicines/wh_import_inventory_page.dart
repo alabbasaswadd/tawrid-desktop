@@ -14,6 +14,7 @@ import 'package:tawrid_app/repositories/inventory_import_repository.dart';
 import 'package:tawrid_app/repositories/sales_offer_repository.dart';
 import 'package:tawrid_app/repositories/warehouse_service_area_repository.dart';
 import 'package:tawrid_app/shared/ui/ui.dart';
+import 'package:tawrid_app/shared/utils/money.dart';
 
 /// استيراد المخزون من ملف Excel بمساعدة وكيل الـ AI.
 ///
@@ -81,11 +82,21 @@ class _WhImportInventoryPageState extends ConsumerState<WhImportInventoryPage> {
   /// من الردّ نفسه، أو من المراقبة الدورية حين يضيع الردّ.
   List<ImportOfferPlan> _pendingOffers = const [];
 
+  /// هل يُعرَض على المستخدم اختيار وضع الاستيراد؟
+  ///
+  /// معطَّلٌ الآن بطلب صاحب المنتج: لا حاجة إلى النشرة الوطنية، فالمزامنة
+  /// مع المخزون والعروض وحدهما. وإخفاء الاختيار خيرٌ من عرضه بخيارٍ
+  /// واحد — سؤالٌ بلا جواب.
+  ///
+  /// والوضعان كلاهما مبنيٌّ وعاملٌ في الخادم: إعادةُ الاختيار تبديلُ
+  /// هذا الثابت، لا كتابةُ ميزةٍ من جديد.
+  static const bool _catalogModeSelectable = false;
+
   /// يُرفَع الملف بلا مطابقة كتالوج — مزامنةٌ مع المخزون والعروض وحدهما.
   ///
   /// قرارٌ يُتَّخذ قبل الرفع لا بعده: المطابقة مرحلةٌ في الخادم تجري
   /// أثناء التحليل، فلا تُلغى بأثرٍ رجعي.
-  bool _skipCatalog = false;
+  bool _skipCatalog = !_catalogModeSelectable;
 
   /// الملف نشرة أسعار — فكل أصنافه بنود عرضٍ لا حَمَلةُ الخصم وحدهم.
   ///
@@ -461,7 +472,7 @@ class _WhImportInventoryPageState extends ConsumerState<WhImportInventoryPage> {
     );
     if (value == null || !mounted) return;
 
-    final price = value.isEmpty ? null : double.tryParse(value);
+    final price = value.isEmpty ? null : parseDecimalInput(value);
     if (value.isNotEmpty && price == null) return; // نصّ ليس رقماً — يُهمَل
 
     // copyWith لا بناءٌ يدوي: الصفّ صار يحمل شركةً وخصماً وبونصاً
@@ -1087,6 +1098,7 @@ class _WhImportInventoryPageState extends ConsumerState<WhImportInventoryPage> {
         error: _error,
         notice: _notice,
         skipCatalog: _skipCatalog,
+        showModeChooser: _catalogModeSelectable,
         onModeChanged: (v) => setState(() => _skipCatalog = v),
       );
     }
@@ -1131,6 +1143,7 @@ class _IdleView extends StatelessWidget {
   const _IdleView({
     required this.onPick,
     required this.skipCatalog,
+    required this.showModeChooser,
     required this.onModeChanged,
     this.error,
     this.notice,
@@ -1140,6 +1153,10 @@ class _IdleView extends StatelessWidget {
 
   /// الوضع المختار: تخطّي مطابقة الكتالوج الوطني.
   final bool skipCatalog;
+
+  /// هل يُعرَض الاختيار؟ معطَّلٌ الآن — انظر `_catalogModeSelectable`.
+  final bool showModeChooser;
+
   final ValueChanged<bool> onModeChanged;
 
   final String? error;
@@ -1186,8 +1203,14 @@ class _IdleView extends StatelessWidget {
               // لا بعده: المطابقة مرحلةٌ تجري في الخادم أثناء التحليل،
               // فلا تُلغى بأثرٍ رجعي. وعرضُها خيارين صريحين خيرٌ من
               // إعدادٍ مخبوء — الفرق بينهما في الزمن والنتيجة كبير.
-              _ModeChooser(skipCatalog: skipCatalog, onChanged: onModeChanged),
-              const SizedBox(height: AppSpacing.xl),
+              //
+              // ومخفيٌّ الآن: الوضع واحدٌ مثبَّت، وسؤالٌ بخيارٍ واحد
+              // ليس سؤالاً.
+              if (showModeChooser) ...[
+                _ModeChooser(
+                    skipCatalog: skipCatalog, onChanged: onModeChanged),
+                const SizedBox(height: AppSpacing.xl),
+              ],
 
               if (error != null) ...[
                 _NoticeCard(
@@ -1231,6 +1254,8 @@ class _IdleView extends StatelessWidget {
                     const _Hint('لا يلزم قالب معيّن — الوكيل يستنتج الأعمدة'),
                     const _Hint('يفصل العيار والشكل الدوائي عن اسم الدواء'),
                     const _Hint('يقرأ الخصم والبونص والشركة فيُنشئ العروض'),
+                    const _Hint(
+                        'يدخل مخزونك باسمه وعياره — بلا ربطٍ بالنشرة الوطنية'),
                     const _Hint('تراجع النتيجة قبل أن يُكتب شيء في مخزونك'),
                     const _Hint('الصيغ المدعومة: xlsx و csv'),
                   ],
@@ -2494,6 +2519,7 @@ class _SyncItemTile extends StatelessWidget {
 /// الكتالوج «غير موجود».
 enum _RowFilter {
   all('الكل'),
+  changed('ما اختلف'),
   offers('بنود عرض'),
   missingPrice('ناقص سعر'),
   newItem('جديد'),
@@ -2516,6 +2542,11 @@ enum _RowFilter {
         // التي لا تستطيع أن تصير بنوداً — يُجمَعن هنا ليُملأ نقصُهنّ
         // بنقرةٍ واحدة بدل البحث عنهنّ في مئة سطر.
         _RowFilter.missingPrice => row.isOfferGap,
+
+        // و«ما اختلف» جوابُ المزامنة الثانية: ملفٌ بسبعمئة صنفٍ قد لا
+        // يحمل جديداً إلا في عشرين، وعرضُ السبعمئة كلّها يُلزم صاحبها
+        // بالبحث عنها بعينه.
+        _RowFilter.changed => row.willChange,
         _RowFilter.newItem => row.matchStatus == ImportMatch.matched,
         _RowFilter.priceUpdate => row.matchStatus == ImportMatch.owned,
         _RowFilter.needsConfirm => row.matchStatus == ImportMatch.ambiguous,
@@ -2524,6 +2555,7 @@ enum _RowFilter {
 
   StatusTone get tone => switch (this) {
         _RowFilter.all => StatusTone.neutral,
+        _RowFilter.changed => StatusTone.success,
         _RowFilter.offers => StatusTone.brand,
         _RowFilter.missingPrice => StatusTone.danger,
         _RowFilter.newItem => StatusTone.success,
@@ -2606,6 +2638,10 @@ class _ReviewViewState extends State<_ReviewView> {
     // بنود العرض المحدَّدة التي ينقصها سعرُها — ما لن يصل إلى أي عرض.
     final gaps = rows.where((r) => r.isOfferGap).length;
 
+    // ما سيتبدّل فعلاً في «أدويتي» — جواب المزامنة الثانية.
+    final changed = rows.where((r) => r.willChange).length;
+    final actionable = rows.where((r) => r.isActionable).length;
+
     // أصنافٌ مسعَّرة محدَّدة لا يراها الوكيل بنود عرض — مادّة نشرة
     // الأسعار. وبلا هذا العدد لا معنى للعرض عليه.
     final priceable =
@@ -2664,6 +2700,22 @@ class _ReviewViewState extends State<_ReviewView> {
               // وبطريقَي حسمه: يُملأ أو يُترك. وكان يُطرَح صامتاً،
               // فيَعِد الشريطُ بعشرين بنداً ويصل منها سبعة عشر ولا أحد
               // يعرف أين ذهبت الثلاثة.
+              // ── ماذا اختلف عن مخزونك؟ ───────────────────────────────
+              // أوّلُ سؤالٍ عند كل مزامنةٍ بعد الأولى. والملف الذي لا
+              // يحمل جديداً يُقال له ذلك صراحةً: كان يُعرَض كاملاً
+              // بسبعمئة سطرٍ وزرٍّ مُطفأ مكتوبٌ عليه «لا شيء محدَّد» —
+              // فلا يُعرَف أهو عطبٌ في القراءة أم أن لا جديد فعلاً.
+              if (actionable > 0) ...[
+                const SizedBox(height: AppSpacing.md),
+                _ChangeNotice(
+                  changed: changed,
+                  total: actionable,
+                  onShowChanged: changed == 0
+                      ? null
+                      : () => setState(() => _filter = _RowFilter.changed),
+                ),
+              ],
+
               // ── الملف نشرة أسعار؟ ────────────────────────────────────
               // الوكيل يعرف العرض بخصمٍ أو بونص، وهذا صحيح — لكنّ نشرة
               // الأسعار الصرف عرضٌ تامّ في السوق بلا علامةٍ يلتقطها.
@@ -2825,6 +2877,93 @@ class _ReviewViewState extends State<_ReviewView> {
           ),
         ),
       ],
+    );
+  }
+}
+
+/// ماذا اختلف عن المخزون؟ — لافتةٌ تُجيب قبل أن يُسأل السؤال.
+///
+/// استيراد نفس النشرة شهرياً أمرٌ عادي، وأكثرُ أسعارها لا يتبدّل. فملفٌ
+/// بسبعمئة صنفٍ قد لا يحمل جديداً إلا في عشرين — أو لا يحمل شيئاً.
+///
+/// وكانت الحالتان تُعرَضان سواءً: سبعمئة سطرٍ وزرٌّ مُطفأ مكتوبٌ عليه
+/// «لا شيء محدَّد». فلا يُعرَف أعطبٌ في القراءة هو أم أن الملف مطابقٌ
+/// لمخزونه فعلاً — وهو خبرٌ طيّب لا عطب.
+class _ChangeNotice extends StatelessWidget {
+  const _ChangeNotice({
+    required this.changed,
+    required this.total,
+    required this.onShowChanged,
+  });
+
+  /// كم صفاً سيُحدث أثراً في «أدويتي».
+  final int changed;
+
+  /// كم صفاً صالحاً في الملف أصلاً.
+  final int total;
+
+  /// يفتح تصنيف «ما اختلف» — فارغٌ حين لا شيء اختلف.
+  final VoidCallback? onShowChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = context.colors;
+    final tk = context.tokens;
+
+    final nothing = changed == 0;
+    final fg = nothing ? tk.hint : tk.success;
+
+    return Container(
+      padding: const EdgeInsets.symmetric(
+          horizontal: AppSpacing.lg, vertical: AppSpacing.md),
+      decoration: BoxDecoration(
+        color: nothing ? cs.surface : tk.successSurface,
+        borderRadius: BorderRadius.circular(AppRadius.lg),
+        border: Border.all(
+          color: nothing ? cs.outline : tk.success.withValues(alpha: 0.35),
+        ),
+      ),
+      child: Row(
+        children: [
+          AppIcon(nothing ? AppIcons.check : AppIcons.tag, size: 20, color: fg),
+          const SizedBox(width: AppSpacing.md),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text(
+                  nothing
+                      ? 'لا جديد — مخزونك مطابقٌ للملف'
+                      : '$changed من $total ${changed == 1 ? "صنفاً يختلف" : "صنفاً تختلف"} عن مخزونك',
+                  style: context.text.labelMedium?.copyWith(color: fg),
+                ),
+                const SizedBox(height: 2),
+                Text(
+                  nothing
+                      ? 'كل أصناف الملف موجودة عندك بالأسعار نفسها. لا شيء '
+                          'يُزامَن — ويمكنك إنشاء عرضٍ من هذه الأسعار إن شئت.'
+                      : 'والباقي موجودٌ عندك بسعره — يُترَك كما هو. اعرض '
+                          'المختلف وحده لتراجعه بسرعة.',
+                  style: context.text.bodySmall,
+                ),
+              ],
+            ),
+          ),
+          if (onShowChanged != null) ...[
+            const SizedBox(width: AppSpacing.lg),
+            SizedBox(
+              width: 170,
+              child: AppButton(
+                label: 'اعرض المختلف',
+                variant: AppButtonVariant.outline,
+                appIcon: AppIcons.listRows,
+                onPressed: onShowChanged,
+              ),
+            ),
+          ],
+        ],
+      ),
     );
   }
 }
@@ -3165,6 +3304,9 @@ class _FilterBoard extends StatelessWidget {
       // لا ترتيبَ ذوق.
       _RowFilter.missingPrice,
 
+      // ثم «ما اختلف»: هو جواب السؤال الأول عند كل مزامنةٍ بعد الأولى.
+      _RowFilter.changed,
+
       // ثم بنود العرض: هي الخبر الجديد في الملف، وهي ما يقود إلى خطوة
       // إنشاء العروض.
       _RowFilter.offers,
@@ -3238,6 +3380,7 @@ class _FilterBoard extends StatelessWidget {
   }
 
   static AppIcons _iconFor(_RowFilter f) => switch (f) {
+        _RowFilter.changed => AppIcons.check,
         _RowFilter.offers => AppIcons.gift,
         _RowFilter.missingPrice => AppIcons.alertTriangle,
         _RowFilter.newItem => AppIcons.plus,
@@ -3748,7 +3891,57 @@ class _CandidateSheet extends StatelessWidget {
 }
 
 // ── التقرير النهائي: ماذا أُضيف وماذا عُدِّل ──────────────────────────────
-class _ReportView extends StatelessWidget {
+
+/// صنفٌ في جدول التقرير — موحَّدٌ بين الناجح والمتعذّر.
+///
+/// التوحيد مقصود: الثلاثة (أُضيف، عُدِّل، تعذّر) صفوفٌ في ملفٍ واحد، وفصلُها
+/// في ثلاث قوائم يُجبر صاحبها على البحث عن السطر في ثلاثة مواضع.
+/// والعمود الأخير يقول أيُّها هو.
+class _ReportRow {
+  const _ReportRow({
+    required this.rowNumber,
+    required this.name,
+    required this.kind,
+    this.manufacturer = '',
+    this.strength = 0,
+    this.price,
+    this.previousPrice,
+    this.message,
+  });
+
+  final int rowNumber;
+  final String name;
+  final _ReportKind kind;
+  final String manufacturer;
+  final double strength;
+  final double? price;
+  final double? previousPrice;
+  final String? message;
+}
+
+enum _ReportKind {
+  added('جديد', StatusTone.success),
+  modified('عُدِّل السعر', StatusTone.info),
+  failed('تعذّر', StatusTone.danger);
+
+  const _ReportKind(this.label, this.tone);
+  final String label;
+  final StatusTone tone;
+}
+
+/// تصنيف محتوى التقرير — الأصناف بأنواعها، والعروض وحدها.
+enum _ReportFilter {
+  all('الكل'),
+  added('أُضيف'),
+  modified('عُدِّل السعر'),
+  offers('العروض'),
+  failed('تعذّر');
+
+  const _ReportFilter(this.label);
+  final String label;
+}
+
+class _ReportView extends StatefulWidget {
   const _ReportView({
     required this.report,
     required this.onDone,
@@ -3768,221 +3961,653 @@ class _ReportView extends StatelessWidget {
   final List<String> publishFailed;
 
   @override
+  State<_ReportView> createState() => _ReportViewState();
+}
+
+class _ReportViewState extends State<_ReportView> {
+  _ReportFilter _filter = _ReportFilter.all;
+
+  List<_ReportRow> get _rows => [
+        for (final i in widget.report.added)
+          _ReportRow(
+            rowNumber: i.rowNumber,
+            name: i.displayName,
+            manufacturer: i.manufacturerName,
+            strength: i.strength,
+            price: i.price,
+            kind: _ReportKind.added,
+          ),
+        for (final i in widget.report.modified)
+          _ReportRow(
+            rowNumber: i.rowNumber,
+            name: i.displayName,
+            manufacturer: i.manufacturerName,
+            strength: i.strength,
+            price: i.price,
+            previousPrice: i.previousPrice,
+            kind: _ReportKind.modified,
+          ),
+        for (final f in widget.report.failed)
+          _ReportRow(
+            rowNumber: f.rowNumber,
+            name: f.name,
+            message: f.message,
+            kind: _ReportKind.failed,
+          ),
+      ];
+
+  @override
   Widget build(BuildContext context) {
-    final tk = context.tokens;
+    final report = widget.report;
     final ok = report.total > 0;
 
-    return ListView(
-      padding: const EdgeInsets.fromLTRB(
-          AppSpacing.page, AppSpacing.x2l, AppSpacing.page, AppSpacing.x3l),
+    // بترتيب الملف لا بترتيب التصنيف: صاحبه يقرأ تقريراً عن ملفٍ بين
+    // يديه، فيجد السطر حيث هو فيه.
+    final all = _rows..sort((a, b) => a.rowNumber.compareTo(b.rowNumber));
+
+    final shown = switch (_filter) {
+      _ReportFilter.all => all,
+      _ReportFilter.added =>
+        all.where((r) => r.kind == _ReportKind.added).toList(),
+      _ReportFilter.modified =>
+        all.where((r) => r.kind == _ReportKind.modified).toList(),
+      _ReportFilter.failed =>
+        all.where((r) => r.kind == _ReportKind.failed).toList(),
+      _ReportFilter.offers => const <_ReportRow>[],
+    };
+
+    final counts = {
+      _ReportFilter.all: all.length,
+      _ReportFilter.added: report.added.length,
+      _ReportFilter.modified: report.modified.length,
+      _ReportFilter.offers: report.offers.length,
+      _ReportFilter.failed: report.failed.length,
+    };
+
+    final showOffers = report.offers.isNotEmpty &&
+        (_filter == _ReportFilter.all || _filter == _ReportFilter.offers);
+
+    return Column(
       children: [
-        Center(
-          child: _SuccessBadge(
-            ok: ok,
-            color: ok ? tk.success : tk.warning,
-            background: ok ? tk.successSurface : tk.warningSurface,
+        // ── الترويسة: الخلاصة يميناً والإجراء يساراً ────────────────────
+        // الزرّان في الأعلى لا في آخر القائمة. كانا تحت التقرير كلّه،
+        // فمزامنةٌ بأربعمئة صنفٍ تدفعهما خارج الشاشة — ويبقى صاحبها
+        // يُمرّر بحثاً عن «عودة إلى أدويتي». وهما أوّل ما يريده: قرأ
+        // الخلاصة في سطرٍ، وما بقي تفصيلٌ يُراجَع عند الحاجة.
+        _ReportHeader(
+          ok: ok,
+          report: report,
+          publishing: widget.publishing,
+          onDone: widget.onDone,
+          onAgain: widget.onAgain,
+        ),
+
+        // ── الفلترة ───────────────────────────────────────────────────
+        // «العروض» تجاور الأصناف لا تعلوها: الملف أنتج الاثنين، والسؤال
+        // «ماذا صار؟» يُجاب عنهما معاً.
+        _ReportFilterBar(
+          counts: counts,
+          active: _filter,
+          onPick: (f) => setState(
+            () => _filter = _filter == f ? _ReportFilter.all : f,
           ),
         ),
-        const SizedBox(height: AppSpacing.lg),
-        Text(
-          ok ? 'تمّت المزامنة' : 'لم يُزامَن شيء',
-          style: context.text.titleLarge
-              ?.copyWith(color: ok ? tk.success : tk.warning),
-          textAlign: TextAlign.center,
+
+        Expanded(
+          child: ListView(
+            padding: const EdgeInsets.fromLTRB(
+                AppSpacing.page, AppSpacing.md, AppSpacing.page, AppSpacing.x2l),
+            children: [
+              if (showOffers) ...[
+                _OfferResultBoard(
+                  offers: report.offers,
+                  publishing: widget.publishing,
+                  publishFailed: widget.publishFailed,
+                ),
+                if (shown.isNotEmpty) const SizedBox(height: AppSpacing.xl),
+              ],
+
+              if (report.offerFailures.isNotEmpty &&
+                  _filter != _ReportFilter.added &&
+                  _filter != _ReportFilter.modified) ...[
+                _NoticeCard(
+                  appIcon: AppIcons.alertTriangle,
+                  tone: StatusTone.warning,
+                  title: 'تعذّر إنشاء ${report.offerFailures.length} عرضاً',
+                  body: report.offerFailures
+                      .map((f) => f.company.isEmpty
+                          ? f.message
+                          : '${f.company}: ${f.message}')
+                      .join('\n'),
+                ),
+                const SizedBox(height: AppSpacing.lg),
+              ],
+
+              // ── الجدول ───────────────────────────────────────────────
+              // جدولٌ لا بطاقات: التقرير يُمسَح بالعين عموداً عموداً —
+              // «أيُّ سعرٍ تغيّر؟» سؤالٌ يُجاب بتمرير النظر على عمود،
+              // والبطاقةُ تُفرّق أرقامها فيُقرأ كلُّ صنفٍ وحده.
+              //
+              // وبترقيمٍ جارٍ ١، ٢، ٣ إلى جانب رقم السطر في الملف:
+              // الأول يقول «كم أُنجز»، والثاني يدلّ على موضعه في Excel.
+              if (shown.isNotEmpty) ...[
+                _ReportTableHeader(showPrevious: _hasPrevious(shown)),
+                for (var i = 0; i < shown.length; i++)
+                  _ReportTableRow(
+                    index: i + 1,
+                    row: shown[i],
+                    showPrevious: _hasPrevious(shown),
+                  ),
+              ] else if (!showOffers)
+                Padding(
+                  padding: const EdgeInsets.symmetric(vertical: AppSpacing.x3l),
+                  child: UiEmpty(
+                    message: _filter == _ReportFilter.all
+                        ? 'لم يتغيّر شيء في مخزونك'
+                        : 'لا صنف في «${_filter.label}»',
+                    description: _filter == _ReportFilter.all
+                        ? 'كل ما في الملف كان موجوداً بسعره'
+                        : 'جرّب تصنيفاً آخر أو اعرض الكل',
+                    appIcon: AppIcons.pill,
+                  ),
+                ),
+
+              if (report.skippedCount > 0) ...[
+                const SizedBox(height: AppSpacing.lg),
+                Text(
+                  'تُرك ${report.skippedCount} صفاً بلا تغيير — كان سعرها في '
+                  'الملف هو سعرها عندك.',
+                  style: context.text.labelSmall
+                      ?.copyWith(color: context.tokens.hint),
+                  textAlign: TextAlign.center,
+                ),
+              ],
+
+              const SizedBox(height: AppSpacing.sm),
+              Text(
+                'سعرٌ لم يُحدَّد يبقى مشتقّاً تلقائياً من سعر المستهلك',
+                style: context.text.labelSmall
+                    ?.copyWith(color: context.colors.outline),
+                textAlign: TextAlign.center,
+              ),
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+
+  /// هل في المعروض ما له سعرٌ سابق؟ عمودٌ فارغ كلّه لا يُعرَض.
+  static bool _hasPrevious(List<_ReportRow> rows) =>
+      rows.any((r) => r.previousPrice != null);
+}
+
+/// ترويسة التقرير — الخلاصة والإجراءان، ثابتةٌ فوق المحتوى.
+class _ReportHeader extends StatelessWidget {
+  const _ReportHeader({
+    required this.ok,
+    required this.report,
+    required this.publishing,
+    required this.onDone,
+    required this.onAgain,
+  });
+
+  final bool ok;
+  final ImportReport report;
+  final bool publishing;
+  final VoidCallback onDone;
+  final VoidCallback onAgain;
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = context.colors;
+    final tk = context.tokens;
+    final fg = ok ? tk.success : tk.warning;
+
+    return Container(
+      padding: const EdgeInsets.fromLTRB(
+          AppSpacing.page, AppSpacing.lg, AppSpacing.page, AppSpacing.lg),
+      decoration: BoxDecoration(
+        color: cs.surface,
+        border: Border(bottom: BorderSide(color: cs.outline)),
+      ),
+      child: Row(
+        children: [
+          _SuccessBadge(
+            ok: ok,
+            color: fg,
+            background: ok ? tk.successSurface : tk.warningSurface,
+          ),
+          const SizedBox(width: AppSpacing.lg),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text(ok ? 'تمّت المزامنة' : 'لم يُزامَن شيء',
+                    style: context.text.titleLarge?.copyWith(color: fg)),
+                const SizedBox(height: 2),
+                Text(
+                  ok
+                      ? '${report.added.length} صنفاً جديداً · '
+                          '${report.modified.length} سعراً مُحدَّثاً'
+                          '${report.offers.isNotEmpty ? " · ${report.offers.length} عرضاً" : ""}'
+                      : 'لم يتغيّر شيء في مخزونك',
+                  style: context.text.bodySmall?.copyWith(color: tk.hint),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(width: AppSpacing.lg),
+
+          // النشر الجاري يُقال في الترويسة: هو آخر ما ينتظره صاحبها،
+          // وإخفاؤه في بطاقةٍ أسفل الصفحة يجعله يظنّ أن كل شيء انتهى.
+          if (publishing) ...[
+            SizedBox(
+              width: 16,
+              height: 16,
+              child: CircularProgressIndicator(
+                strokeWidth: 2,
+                valueColor: AlwaysStoppedAnimation<Color>(cs.primary),
+              ),
+            ),
+            const SizedBox(width: AppSpacing.sm),
+            Text('يَنشر العروض…',
+                style: context.text.labelSmall?.copyWith(color: cs.primary)),
+            const SizedBox(width: AppSpacing.lg),
+          ],
+
+          SizedBox(
+            width: 170,
+            child: AppButton(
+              label: 'استيراد ملف آخر',
+              variant: AppButtonVariant.outline,
+              appIcon: AppIcons.fileImport,
+              onPressed: onAgain,
+            ),
+          ),
+          const SizedBox(width: AppSpacing.md),
+          SizedBox(
+            width: 190,
+            child: AppButton(
+              label: 'عودة إلى أدويتي',
+              appIcon: AppIcons.check,
+              onPressed: onDone,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// شريط تصنيف التقرير — شرائحُ بعدّادها.
+class _ReportFilterBar extends StatelessWidget {
+  const _ReportFilterBar({
+    required this.counts,
+    required this.active,
+    required this.onPick,
+  });
+
+  final Map<_ReportFilter, int> counts;
+  final _ReportFilter active;
+  final void Function(_ReportFilter) onPick;
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = context.colors;
+
+    // الخانة الفارغة تُطرح: «تعذّر: ٠» ليس خبراً. و«الكل» تبقى دائماً
+    // لأنها طريق العودة.
+    final shown = [
+      _ReportFilter.all,
+      _ReportFilter.added,
+      _ReportFilter.modified,
+      _ReportFilter.offers,
+      _ReportFilter.failed,
+    ].where((f) => f == _ReportFilter.all || (counts[f] ?? 0) > 0).toList();
+
+    if (shown.length <= 1) return const SizedBox.shrink();
+
+    return Container(
+      padding: const EdgeInsets.symmetric(
+          horizontal: AppSpacing.page, vertical: AppSpacing.sm),
+      decoration: BoxDecoration(
+        color: cs.surface,
+        border: Border(bottom: BorderSide(color: cs.outline)),
+      ),
+      child: Row(
+        children: [
+          for (final f in shown) ...[
+            if (f != shown.first) const SizedBox(width: AppSpacing.sm),
+            AppFilterChip(
+              label: '${f.label} (${counts[f] ?? 0})',
+              selected: active == f,
+              onTap: () => onPick(f),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+}
+
+/// ترويسة جدول التقرير.
+class _ReportTableHeader extends StatelessWidget {
+  const _ReportTableHeader({required this.showPrevious});
+
+  final bool showPrevious;
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = context.colors;
+    final style = context.text.labelSmall?.copyWith(color: context.tokens.hint);
+
+    return Container(
+      padding: const EdgeInsets.symmetric(
+          horizontal: AppSpacing.md, vertical: AppSpacing.sm),
+      decoration: BoxDecoration(
+        color: cs.surfaceContainerHighest,
+        borderRadius: const BorderRadius.vertical(
+            top: Radius.circular(AppRadius.md)),
+        border: Border.all(color: cs.outline),
+      ),
+      child: Row(
+        children: [
+          SizedBox(width: 40, child: Text('#', style: style)),
+          SizedBox(width: 56, child: Text('السطر', style: style)),
+          Expanded(flex: 5, child: Text('الصنف', style: style)),
+          if (showPrevious)
+            SizedBox(width: 100, child: Text('السعر السابق', style: style)),
+          SizedBox(width: 100, child: Text('السعر', style: style)),
+          SizedBox(width: 120, child: Text('الحالة', style: style)),
+        ],
+      ),
+    );
+  }
+}
+
+class _ReportTableRow extends StatelessWidget {
+  const _ReportTableRow({
+    required this.index,
+    required this.row,
+    required this.showPrevious,
+  });
+
+  final int index;
+  final _ReportRow row;
+  final bool showPrevious;
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = context.colors;
+    final tk = context.tokens;
+
+    final tone = switch (row.kind.tone) {
+      StatusTone.success => tk.success,
+      StatusTone.info => tk.info,
+      StatusTone.danger => tk.danger,
+      _ => cs.primary,
+    };
+
+    // تظليل السطور الزوجية: الجدول عريض، والعين تتيه بين عموده الأول
+    // وعموده الأخير بلا خطٍّ يقودها.
+    return Container(
+      decoration: BoxDecoration(
+        color: index.isEven
+            ? cs.surfaceContainerHighest.withValues(alpha: 0.35)
+            : cs.surface,
+        border: Border(
+          left: BorderSide(color: cs.outline),
+          right: BorderSide(color: cs.outline),
+          bottom: BorderSide(color: cs.outline),
+        ),
+      ),
+      padding: const EdgeInsets.symmetric(
+          horizontal: AppSpacing.md, vertical: AppSpacing.sm),
+      child: Row(
+        children: [
+          // الترقيم الجاري — يقول «كم أُنجز» بالنظر إلى آخر سطر.
+          SizedBox(
+            width: 40,
+            child: Text('$index',
+                style: context.text.labelSmall?.copyWith(color: tk.hint)),
+          ),
+          // ورقم السطر في الملف — يدلّ على موضعه في Excel حين يُراجَع.
+          SizedBox(
+            width: 56,
+            child: Text('${row.rowNumber}',
+                style: context.text.labelSmall?.copyWith(color: tk.hint)),
+          ),
+          Expanded(
+            flex: 5,
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text(row.name,
+                    style: context.text.labelMedium,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis),
+                if (row.message != null)
+                  Text(row.message!,
+                      style:
+                          context.text.labelSmall?.copyWith(color: tk.danger),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis)
+                else if (row.manufacturer.isNotEmpty || row.strength > 0)
+                  Text(
+                    [
+                      if (row.strength > 0) '${_num(row.strength)} ملغ',
+                      if (row.manufacturer.isNotEmpty) row.manufacturer,
+                    ].join(' · '),
+                    style: context.text.labelSmall?.copyWith(color: tk.hint),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+              ],
+            ),
+          ),
+          if (showPrevious)
+            SizedBox(
+              width: 100,
+              child: row.previousPrice != null
+                  ? Text(
+                      _num(row.previousPrice!),
+                      style: context.text.labelSmall?.copyWith(
+                        color: tk.hint,
+                        decoration: TextDecoration.lineThrough,
+                      ),
+                    )
+                  : Text('—',
+                      style:
+                          context.text.labelSmall?.copyWith(color: tk.hint)),
+            ),
+          SizedBox(
+            width: 100,
+            child: row.kind == _ReportKind.failed
+                ? Text('—',
+                    style: context.text.labelSmall?.copyWith(color: tk.hint))
+                : Text(
+                    row.price == null ? 'مشتقّ' : _num(row.price!),
+                    style: row.price == null
+                        ? context.text.labelSmall?.copyWith(color: tk.hint)
+                        : context.priceBrandStyle,
+                  ),
+          ),
+          SizedBox(
+            width: 120,
+            child: Align(
+              alignment: AlignmentDirectional.centerStart,
+              child: StatusBadge(label: row.kind.label, tone: row.kind.tone),
+            ),
+          ),
+          const SizedBox(width: AppSpacing.xs),
+          Container(width: 3, height: 26, color: tone),
+        ],
+      ),
+    );
+  }
+
+  static String _num(double v) =>
+      v == v.roundToDouble() ? v.toStringAsFixed(0) : v.toString();
+}
+
+/// بطاقات العروض المُنشأة — شبكةٌ تملأ العرض.
+class _OfferResultBoard extends StatelessWidget {
+  const _OfferResultBoard({
+    required this.offers,
+    required this.publishing,
+    required this.publishFailed,
+  });
+
+  final List<ImportCreatedOffer> offers;
+  final bool publishing;
+  final List<String> publishFailed;
+
+  @override
+  Widget build(BuildContext context) {
+    final tk = context.tokens;
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        AppSectionHeader(
+          title: 'العروض المُنشأة (${offers.length})',
+          appIcon: AppIcons.gift,
         ),
         const SizedBox(height: AppSpacing.xs),
         Text(
-          ok
-              ? '${report.added.length} صنفاً جديداً · '
-                  '${report.modified.length} سعراً مُحدَّثاً'
-              : 'لم يتغيّر شيء في مخزونك',
-          style: context.text.bodySmall?.copyWith(color: tk.hint),
-          textAlign: TextAlign.center,
+          publishing
+              ? 'يَنشرها الآن…'
+              : publishFailed.isEmpty
+                  ? 'نُشرت — تراها الصيدليات في مناطق استهدافك'
+                  : 'نُشر ${offers.length - publishFailed.length} من '
+                      '${offers.length} — تعذّر: ${publishFailed.join(" · ")}',
+          style: context.text.bodySmall?.copyWith(
+            color: publishFailed.isEmpty ? tk.success : tk.warning,
+          ),
         ),
-        const SizedBox(height: AppSpacing.x2l),
+        const SizedBox(height: AppSpacing.sm),
+        LayoutBuilder(
+          builder: (context, constraints) {
+            final columns =
+                columnsFor(constraints.maxWidth, minTile: 280, max: 4);
 
-        if (report.added.isNotEmpty)
-          _ReportSection(
-            title: 'أُضيف إلى أدويتي',
-            icon: AppIcons.plus,
-            tone: StatusTone.success,
-            items: report.added,
-            showPrevious: false,
-          ),
-
-        if (report.modified.isNotEmpty) ...[
-          const SizedBox(height: AppSpacing.lg),
-          _ReportSection(
-            title: 'عُدِّل سعره',
-            icon: AppIcons.tag,
-            tone: StatusTone.info,
-            items: report.modified,
-            showPrevious: true,
-          ),
-        ],
-
-        // ── العروض المُنشأة ──────────────────────────────────────────
-        // تُعرَض قبل الأعطال لأنها الخبر الأهمّ: شيءٌ جديد صار موجوداً،
-        // ويُقال صراحةً إنه مسوّدة حتى لا يُظنّ أنه بلغ الصيدليات.
-        if (report.offers.isNotEmpty) ...[
-          const SizedBox(height: AppSpacing.md),
-          AppCard(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
+            return Column(
               children: [
-                Row(
-                  children: [
-                    AppIcon(AppIcons.gift, size: 18, color: context.colors.primary),
-                    const SizedBox(width: AppSpacing.sm),
-                    Expanded(
-                      child: Text('أُنشئ ${report.offers.length} عرضاً',
-                          style: context.text.labelLarge),
-                    ),
-                    if (publishing)
-                      SizedBox(
-                        width: 16,
-                        height: 16,
-                        child: CircularProgressIndicator(
-                          strokeWidth: 2,
-                          valueColor: AlwaysStoppedAnimation<Color>(
-                              context.colors.primary),
-                        ),
-                      ),
-                  ],
-                ),
-                const SizedBox(height: AppSpacing.xs),
-
-                // حالة النشر تُقال في موضعها: «أُنشئ» وحدها كانت تترك
-                // السؤال معلّقاً — أوصلت الصيدليات أم لا؟
-                Text(
-                  publishing
-                      ? 'يَنشرها الآن…'
-                      : publishFailed.isEmpty
-                          ? 'نُشرت — تراها الصيدليات في مناطق استهدافك'
-                          : 'نُشر ${report.offers.length - publishFailed.length} '
-                              'من ${report.offers.length}',
-                  style: context.text.bodySmall?.copyWith(
-                    color: publishFailed.isEmpty
-                        ? context.tokens.success
-                        : context.tokens.warning,
-                  ),
-                ),
-                if (publishFailed.isNotEmpty) ...[
-                  const SizedBox(height: 2),
-                  Text(
-                    'تعذّر نشر: ${publishFailed.join(' · ')} — انشرها من شاشة '
-                    'العروض',
-                    style: context.text.labelSmall
-                        ?.copyWith(color: context.tokens.warning),
-                  ),
-                ],
-                const SizedBox(height: AppSpacing.sm),
-                for (final o in report.offers)
-                  Padding(
-                    padding: const EdgeInsets.only(bottom: AppSpacing.xs),
+                for (var i = 0; i < offers.length; i += columns) ...[
+                  if (i > 0) const SizedBox(height: AppSpacing.md),
+                  IntrinsicHeight(
                     child: Row(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
                       children: [
-                        Expanded(
-                          child: Text(o.title,
-                              style: context.text.bodySmall,
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis),
-                        ),
-                        StatusBadge(
-                          label: '${o.itemCount} بنداً',
-                          tone: StatusTone.neutral,
-                        ),
+                        for (var j = i; j < i + columns; j++) ...[
+                          if (j > i) const SizedBox(width: AppSpacing.md),
+                          Expanded(
+                            child: j < offers.length
+                                ? _CreatedOfferCard(
+                                    offer: offers[j],
+                                    failed: publishFailed
+                                        .contains(offers[j].title),
+                                    publishing: publishing,
+                                  )
+                                : const SizedBox.shrink(),
+                          ),
+                        ],
                       ],
                     ),
                   ),
-                const SizedBox(height: AppSpacing.xs),
-                Text(
-                  'كلّها «مسوّدة» — افتح شاشة العروض لمراجعتها ونشرها.',
-                  style: context.text.labelSmall?.copyWith(color: tk.hint),
-                ),
+                ],
               ],
-            ),
-          ),
-        ],
-
-        if (report.offerFailures.isNotEmpty) ...[
-          const SizedBox(height: AppSpacing.md),
-          _NoticeCard(
-            appIcon: AppIcons.alertTriangle,
-            tone: StatusTone.warning,
-            title: 'تعذّر إنشاء ${report.offerFailures.length} عرضاً',
-            body: report.offerFailures
-                .map((f) => '${f.company}: ${f.message}')
-                .join('\n'),
-          ),
-        ],
-
-        if (report.hasFailures) ...[
-          const SizedBox(height: AppSpacing.lg),
-          AppCard(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Row(
-                  children: [
-                    AppIcon(AppIcons.alertTriangle, size: 16, color: tk.danger),
-                    const SizedBox(width: AppSpacing.sm),
-                    Text('تعذّر ${report.failed.length}',
-                        style: context.text.labelLarge
-                            ?.copyWith(color: tk.danger)),
-                  ],
-                ),
-                const SizedBox(height: AppSpacing.sm),
-                for (final f in report.failed.take(10))
-                  Padding(
-                    padding: const EdgeInsets.only(bottom: 2),
-                    child: Text(
-                      'السطر ${f.rowNumber} — ${f.name}: ${f.message}',
-                      style:
-                          context.text.bodySmall?.copyWith(color: tk.hint),
-                    ),
-                  ),
-                if (report.failed.length > 10)
-                  Text('…و${report.failed.length - 10} غيرها',
-                      style:
-                          context.text.labelSmall?.copyWith(color: tk.hint)),
-              ],
-            ),
-          ),
-        ],
-
-        if (report.skippedCount > 0) ...[
-          const SizedBox(height: AppSpacing.md),
-          Text(
-            'تُرك ${report.skippedCount} صفاً بلا تغيير',
-            style: context.text.labelSmall?.copyWith(color: tk.hint),
-            textAlign: TextAlign.center,
-          ),
-        ],
-
-        const SizedBox(height: AppSpacing.x2l),
-        AppButton(
-          label: 'عودة إلى أدويتي',
-          appIcon: AppIcons.check,
-          onPressed: onDone,
-        ),
-        const SizedBox(height: AppSpacing.sm),
-        AppButton(
-          label: 'استيراد ملف آخر',
-          variant: AppButtonVariant.text,
-          onPressed: onAgain,
-        ),
-        const SizedBox(height: AppSpacing.md),
-        Text(
-          'سعرٌ لم يُحدَّد يبقى مشتقّاً تلقائياً من سعر المستهلك',
-          style: context.text.labelSmall?.copyWith(color: context.colors.outline),
-          textAlign: TextAlign.center,
+            );
+          },
         ),
       ],
     );
   }
 }
 
+class _CreatedOfferCard extends StatelessWidget {
+  const _CreatedOfferCard({
+    required this.offer,
+    required this.failed,
+    required this.publishing,
+  });
+
+  final ImportCreatedOffer offer;
+  final bool failed;
+  final bool publishing;
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = context.colors;
+    final tk = context.tokens;
+
+    return Container(
+      padding: const EdgeInsets.all(AppSpacing.md),
+      decoration: BoxDecoration(
+        color: failed ? tk.warningSurface : tk.brandSurface,
+        borderRadius: BorderRadius.circular(AppRadius.lg),
+        border: Border.all(
+          color: failed
+              ? tk.warning.withValues(alpha: 0.4)
+              : cs.primary.withValues(alpha: 0.4),
+        ),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Row(
+            children: [
+              AppIcon(AppIcons.gift,
+                  size: 16, color: failed ? tk.warning : cs.primary),
+              const SizedBox(width: AppSpacing.sm),
+              Expanded(
+                child: Text(offer.title,
+                    style: context.text.labelLarge,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis),
+              ),
+            ],
+          ),
+          if (offer.company.isNotEmpty) ...[
+            const SizedBox(height: 2),
+            Text(offer.company,
+                style: context.text.labelSmall?.copyWith(color: tk.hint),
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis),
+          ],
+          const SizedBox(height: AppSpacing.sm),
+          Row(
+            children: [
+              StatusBadge(
+                label: '${offer.itemCount} بنداً',
+                tone: StatusTone.neutral,
+              ),
+              const SizedBox(width: AppSpacing.xs),
+              // حال النشر على البطاقة نفسها: «أُنشئ» وحدها تترك السؤال
+              // معلّقاً — أوصلت الصيدليات أم لا؟
+              StatusBadge(
+                label: publishing
+                    ? 'يُنشَر…'
+                    : failed
+                        ? 'لم يُنشَر'
+                        : 'سارٍ',
+                tone: publishing
+                    ? StatusTone.neutral
+                    : failed
+                        ? StatusTone.warning
+                        : StatusTone.success,
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+}
 /// علامة النجاح تظهر بارتداد — لحظة الإنجاز تستحق تمييزاً.
 class _SuccessBadge extends StatefulWidget {
   const _SuccessBadge({
@@ -4031,106 +4656,6 @@ class _SuccessBadgeState extends State<_SuccessBadge>
           ),
         ),
       ),
-    );
-  }
-}
-
-class _ReportSection extends StatelessWidget {
-  const _ReportSection({
-    required this.title,
-    required this.icon,
-    required this.tone,
-    required this.items,
-    required this.showPrevious,
-  });
-
-  final String title;
-  final AppIcons icon;
-  final StatusTone tone;
-  final List<ImportAppliedItem> items;
-  final bool showPrevious;
-
-  @override
-  Widget build(BuildContext context) {
-    final tk = context.tokens;
-    final fg = switch (tone) {
-      StatusTone.success => tk.success,
-      StatusTone.info => tk.info,
-      _ => context.colors.primary,
-    };
-
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        AppSectionHeader(
-          title: '$title (${items.length})',
-          appIcon: icon,
-        ),
-        const SizedBox(height: AppSpacing.sm),
-        for (var i = 0; i < items.length; i++)
-          _Appear(
-            index: i,
-            child: Padding(
-              padding: const EdgeInsets.only(bottom: AppSpacing.xs),
-              child: AppCard(
-                padding: const EdgeInsets.symmetric(
-                    horizontal: AppSpacing.md, vertical: AppSpacing.sm),
-                child: Row(
-                  children: [
-                    AppIcon(icon, size: 14, color: fg),
-                    const SizedBox(width: AppSpacing.sm),
-                    Expanded(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text(items[i].displayName,
-                              style: context.text.labelMedium,
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis),
-                          if (items[i].manufacturerName.isNotEmpty)
-                            Text(items[i].manufacturerName,
-                                style: context.text.labelSmall
-                                    ?.copyWith(color: tk.hint),
-                                maxLines: 1,
-                                overflow: TextOverflow.ellipsis),
-                        ],
-                      ),
-                    ),
-                    const SizedBox(width: AppSpacing.sm),
-
-                    // للمُعدَّل: من كم إلى كم. السعر الجديد وحده خبرٌ ناقص.
-                    Row(
-                      children: [
-                        if (showPrevious && items[i].previousPrice != null) ...[
-                          Text(
-                            _num(items[i].previousPrice!),
-                            style: context.text.labelSmall?.copyWith(
-                              color: tk.hint,
-                              decoration: TextDecoration.lineThrough,
-                            ),
-                          ),
-                          const SizedBox(width: 4),
-                          AppIcon(AppIcons.chevronForwardRtl,
-                              size: 10, color: tk.hint),
-                          const SizedBox(width: 4),
-                        ],
-                        Text(
-                          items[i].price == null
-                              ? 'مشتقّ'
-                              : _num(items[i].price!),
-                          style: items[i].price == null
-                              ? context.text.labelSmall
-                                  ?.copyWith(color: tk.hint)
-                              : context.priceBrandStyle,
-                        ),
-                      ],
-                    ),
-                  ],
-                ),
-              ),
-            ),
-          ),
-      ],
     );
   }
 }

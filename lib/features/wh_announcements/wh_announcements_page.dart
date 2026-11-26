@@ -8,6 +8,7 @@ import 'package:tawrid_app/repositories/announcement_repository.dart';
 import 'package:tawrid_app/shared/ui/ui.dart';
 import 'package:tawrid_app/shared/utils/relative_time.dart';
 import 'package:tawrid_app/shared/widgets/app_states.dart';
+import 'package:tawrid_app/shared/utils/money.dart';
 
 class WhAnnouncementsPage extends ConsumerStatefulWidget {
   const WhAnnouncementsPage({super.key});
@@ -183,7 +184,7 @@ class _CreateAnnouncementSheetState
       AppSnackbar.error(context, 'يُرجى ملء العنوان ونسبة الخصم');
       return;
     }
-    final discount = double.tryParse(discountText);
+    final discount = parseDecimalInput(discountText);
     if (discount == null || discount <= 0 || discount > 100) {
       AppSnackbar.error(context, 'نسبة الخصم يجب أن تكون بين 1 و100');
       return;

@@ -245,7 +245,7 @@ class _PhCreateListingPageState extends ConsumerState<PhCreateListingPage> {
                       textInputAction: TextInputAction.next,
                       validator: (v) {
                         if (v == null || v.trim().isEmpty) return 'مطلوب';
-                        if (double.tryParse(v.trim()) == null ||
+                        if (parseDecimalInput(v) == null ||
                             double.parse(v.trim()) <= 0) {
                           return 'سعر صحيح > 0';
                         }

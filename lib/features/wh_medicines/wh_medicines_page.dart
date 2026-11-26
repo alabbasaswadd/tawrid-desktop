@@ -160,7 +160,8 @@ class _WhMedicinesPageState extends ConsumerState<WhMedicinesPage> {
   // إفراغ الحقل يسحب السعر — يختفي الصنف من بحث الصيدليات ويبقى في قائمتك.
   Future<void> _editPrice(WarehouseMedicine m) async {
     final controller = TextEditingController(
-      text: m.price == null ? '' : m.price!.toStringAsFixed(0),
+      // لا تدوير: السعر ٢٫٢٥ كان يُعرَض «2»، فيكفي ضغط «حفظ» ليصير اثنين.
+      text: m.price == null ? '' : formatForInput(m.price!),
     );
 
     final result = await showDialog<_PriceResult>(
@@ -201,12 +202,14 @@ class _WhMedicinesPageState extends ConsumerState<WhMedicinesPage> {
           ),
           FilledButton(
             onPressed: () {
-              final raw = controller.text.trim().replaceAll(',', '');
-              if (raw.isEmpty) {
+              if (controller.text.trim().isEmpty) {
                 Navigator.pop(ctx, const _PriceResult(null));
                 return;
               }
-              final value = double.tryParse(raw);
+              // الفاصلة عشريةٌ لا تُحذَف: `replaceAll(',', '')` كان
+              // يحوّل «٣,٥» إلى «٣٥» — عشرةَ أضعاف ما قصده صاحبه،
+              // ويذهب إلى الصيدليات بلا تنبيه.
+              final value = parseDecimalInput(controller.text);
               if (value == null || value <= 0) {
                 AppSnackbar.error(ctx, 'أدخل سعراً أكبر من صفر');
                 return;

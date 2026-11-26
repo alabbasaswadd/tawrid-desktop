@@ -40,9 +40,9 @@ class _ItemDraft {
 
   Map<String, dynamic> toPayload() => {
         'tenderItemId': item.id,
-        'unitPrice': double.tryParse(unitPrice.text.trim()),
-        'bonusPercentage': double.tryParse(bonusPercentage.text.trim()),
-        'extraBonus': double.tryParse(extraBonus.text.trim()),
+        'unitPrice': parseDecimalInput(unitPrice.text),
+        'bonusPercentage': parseDecimalInput(bonusPercentage.text),
+        'extraBonus': parseDecimalInput(extraBonus.text),
         'notes': notes.text.trim().isEmpty ? null : notes.text.trim(),
       };
 }
