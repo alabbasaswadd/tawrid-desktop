@@ -1,8 +1,10 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:tawrid_app/app/theme/app_spacing.dart';
 import 'package:tawrid_app/app/theme/app_tokens_ext.dart';
 import 'package:tawrid_app/models/ai_import_models.dart';
 import 'package:tawrid_app/models/sales_offer_models.dart';
+import 'package:tawrid_app/repositories/warehouse_service_area_repository.dart';
 import 'package:tawrid_app/shared/ui/ui.dart';
 import 'package:tawrid_app/shared/widgets/multi_region_picker.dart';
 
@@ -13,7 +15,8 @@ class ImportOfferGroup {
   final String company;
   final List<ImportRow> rows;
 
-  int get discounted => rows.where((r) => (r.discountPercentage ?? 0) > 0).length;
+  int get discounted =>
+      rows.where((r) => (r.discountPercentage ?? 0) > 0).length;
   int get bonused => rows.where((r) => r.bonusLabel != null).length;
 
   /// الشركة المجهولة: صفوفٌ لم يجد لها الوكيل شركة.
@@ -26,31 +29,36 @@ class ImportOfferGroup {
 ///
 /// خطوةٌ قائمة بذاتها لأن ما تحتاجه ليس في الملف: ملفُّ أسعارٍ يحمل
 /// أصنافاً وشروطاً تجارية، ولا يحمل مناطقَ ولا مدداً — وهما شرطُ إنشاء
-/// العرض في الخادم. فلا سبيل إلى اشتقاقهما، ويختارهما صاحب المستودع.
+/// العرض في الخادم.
 ///
-/// والاستهداف واحدٌ لكل العروض عمداً: المستودع يخدم مناطقه نفسها مهما
-/// تعدّدت شركاته، وطلبُ استهدافٍ مستقلٍّ لكل شركة يُضاعف العمل بلا أن
-/// يُضيف قراراً. وما يختلف بين العروض — العنوان وإنشاؤه من عدمه — يبقى
-/// لكل شركة.
-class ImportOfferSetupPage extends StatefulWidget {
+/// وتخطيطها لسطح المكتب لا للهاتف: الشاشة عريضة، وعمودٌ واحد في وسطها
+/// يترك ثلثيها فارغين ويُطيل التمرير بلا سبب. فالعروض شبكةٌ تملأ العرض،
+/// والاستهداف في ترويسةٍ ثابتة فوقها — قرارٌ واحد يسري على الكل، ومكانُه
+/// حيث يُرى دائماً لا حيث يُبحَث عنه بالتمرير.
+class ImportOfferSetupPage extends ConsumerStatefulWidget {
   const ImportOfferSetupPage({required this.groups, super.key});
 
   final List<ImportOfferGroup> groups;
 
   @override
-  State<ImportOfferSetupPage> createState() => _ImportOfferSetupPageState();
+  ConsumerState<ImportOfferSetupPage> createState() =>
+      _ImportOfferSetupPageState();
 }
 
-class _ImportOfferSetupPageState extends State<ImportOfferSetupPage> {
-  /// أي الشركات يُنشأ لها عرض — الكل ابتداءً، فهذا سبب وصوله إلى هنا.
+class _ImportOfferSetupPageState extends ConsumerState<ImportOfferSetupPage> {
   final Set<String> _enabled = {};
   final Map<String, TextEditingController> _titles = {};
 
   List<TargetRegion> _regions = [];
+
+  /// هل لمس المستخدم الاستهداف؟
+  ///
+  /// بلا هذا كان الافتراضي يُعاد فرضه عند كل إعادة بناء، فلا يستطيع أحد
+  /// إزالة منطقة — تعود فوراً.
+  bool _regionsTouched = false;
+
   DateTime _startsAt = DateTime.now();
   DateTime? _expiresAt = DateTime.now().add(const Duration(days: 30));
-
-  /// عرضٌ بلا انتهاء — «دائم» في لغة الخادم (ExpiresAt فارغ).
   bool _standing = false;
 
   @override
@@ -70,6 +78,21 @@ class _ImportOfferSetupPageState extends State<ImportOfferSetupPage> {
       c.dispose();
     }
     super.dispose();
+  }
+
+  /// يملأ الاستهداف من مناطق تغطية المستودع.
+  ///
+  /// هو الافتراضي الصحيح لا تسهيلاً: المستودع لا يبيع خارج ما يخدمه،
+  /// والخادم يرفض عرضاً يستهدف منطقةً خارج نطاقه. فالبدء بكامل التغطية
+  /// يُصيب في الغالب، ويُضيّقه من يريد تضييقه.
+  void _seedRegions(List<dynamic> governorates) {
+    if (_regionsTouched || _regions.isNotEmpty) return;
+
+    _regions = [
+      for (final g in governorates)
+        for (final c in g.cities as List<dynamic>)
+          TargetRegion(governorate: g.name as String, city: c.name as String),
+    ];
   }
 
   Future<void> _pickDate({required bool isStart}) async {
@@ -135,128 +158,68 @@ class _ImportOfferSetupPageState extends State<ImportOfferSetupPage> {
     final tk = context.tokens;
     final blocker = _blocker;
 
+    // المناطق المخدومة — تُملأ مرةً حين تصل.
+    ref.listen(myServiceGovernoratesProvider, (_, next) {
+      final areas = next.value;
+      if (areas != null && areas.isNotEmpty) setState(() => _seedRegions(areas));
+    });
+    final served = ref.watch(myServiceGovernoratesProvider).value;
+    if (served != null && served.isNotEmpty) _seedRegions(served);
+
     return Scaffold(
       appBar: const InnerTopBar(title: 'إعداد العروض'),
       body: Column(
         children: [
+          _TargetingHeader(
+            regions: _regions,
+            onRegionsChanged: (v) => setState(() {
+              _regionsTouched = true;
+              _regions = v;
+            }),
+            startsAt: _startsAt,
+            expiresAt: _expiresAt,
+            standing: _standing,
+            onPickStart: () => _pickDate(isStart: true),
+            onPickEnd: () => _pickDate(isStart: false),
+            onStandingChanged: (v) => setState(() => _standing = v),
+          ),
+
           Expanded(
-            child: ListView(
-              padding: const EdgeInsets.fromLTRB(AppSpacing.page, AppSpacing.lg,
-                  AppSpacing.page, AppSpacing.lg),
-              children: [
-                _NoteCard(count: widget.groups.length),
-                const SizedBox(height: AppSpacing.lg),
+            child: LayoutBuilder(
+              builder: (context, constraints) {
+                // عمودٌ لكل ٤٢٠ بكسل: البطاقة أضيق من ذلك تضغط العنوان
+                // وشاراته، وأعرض منها تترك فراغاً في شاشةٍ عريضة.
+                final columns =
+                    (constraints.maxWidth / 420).floor().clamp(1, 4);
 
-                AppSectionHeader(
-                  title: 'العروض (${_enabled.length} من ${widget.groups.length})',
-                  appIcon: AppIcons.gift,
-                ),
-                const SizedBox(height: AppSpacing.sm),
-
-                for (final g in widget.groups) ...[
-                  _CompanyCard(
-                    group: g,
-                    enabled: _enabled.contains(g.company),
-                    controller: _titles[g.company]!,
-                    onToggle: () => setState(() {
-                      if (!_enabled.remove(g.company)) _enabled.add(g.company);
-                    }),
+                return GridView.builder(
+                  padding: const EdgeInsets.all(AppSpacing.page),
+                  gridDelegate:
+                      SliverGridDelegateWithFixedCrossAxisCount(
+                    crossAxisCount: columns,
+                    mainAxisSpacing: AppSpacing.md,
+                    crossAxisSpacing: AppSpacing.md,
+                    // ارتفاعٌ ثابت لا نسبة عرض: البطاقة محتواها معروف
+                    // (عنوان وشارات وحقل)، والنسبة تُطيلها كلّما اتّسعت
+                    // الشاشة فتصير مربّعاتٍ فارغة.
+                    mainAxisExtent: 208,
                   ),
-                  const SizedBox(height: AppSpacing.sm),
-                ],
-
-                const SizedBox(height: AppSpacing.md),
-                AppSectionHeader(
-                  title: 'من يرى هذه العروض',
-                  appIcon: AppIcons.mapPin,
-                ),
-                const SizedBox(height: AppSpacing.sm),
-                AppCard(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text('المناطق المستهدفة',
-                          style: context.text.labelMedium),
-                      const SizedBox(height: AppSpacing.xs),
-                      MultiRegionPicker(
-                        regions: _regions,
-                        onChanged: (v) => setState(() => _regions = v),
-                      ),
-                      const SizedBox(height: AppSpacing.xs),
-                      Text(
-                        'يُطبَّق الاستهداف نفسه على كل العروض المُنشأة من هذا الملف.',
-                        style: context.text.labelSmall
-                            ?.copyWith(color: tk.hint),
-                      ),
-                    ],
-                  ),
-                ),
-
-                const SizedBox(height: AppSpacing.md),
-                AppSectionHeader(title: 'المدّة', appIcon: AppIcons.calendar),
-                const SizedBox(height: AppSpacing.sm),
-                AppCard(
-                  child: Column(
-                    children: [
-                      Row(
-                        children: [
-                          Expanded(
-                            child: _DateField(
-                              label: 'يبدأ في',
-                              date: _startsAt,
-                              onTap: () => _pickDate(isStart: true),
-                            ),
-                          ),
-                          const SizedBox(width: AppSpacing.md),
-                          Expanded(
-                            child: _standing
-                                ? _StandingHint(hint: tk.hint)
-                                : _DateField(
-                                    label: 'ينتهي في',
-                                    date: _expiresAt ?? _startsAt,
-                                    onTap: () => _pickDate(isStart: false),
-                                  ),
-                          ),
-                        ],
-                      ),
-                      const SizedBox(height: AppSpacing.sm),
-                      Row(
-                        children: [
-                          // AppCheckbox عرضٌ لا تفاعل — النقر على الصفّ
-                          // كلّه لا على المربّع وحده: هدفٌ أوسع لليد.
-                          Expanded(
-                            child: InkWell(
-                              onTap: () =>
-                                  setState(() => _standing = !_standing),
-                              borderRadius:
-                                  BorderRadius.circular(AppRadius.sm),
-                              child: Padding(
-                                padding: const EdgeInsets.symmetric(
-                                    vertical: AppSpacing.xs),
-                                child: Row(
-                                  children: [
-                                    AppCheckbox(
-                                      selection: _standing
-                                          ? AppCheckState.all
-                                          : AppCheckState.none,
-                                    ),
-                                    const SizedBox(width: AppSpacing.sm),
-                                    Expanded(
-                                      child: Text(
-                                          'عرض دائم بلا تاريخ انتهاء',
-                                          style: context.text.bodySmall),
-                                    ),
-                                  ],
-                                ),
-                              ),
-                            ),
-                          ),
-                        ],
-                      ),
-                    ],
-                  ),
-                ),
-              ],
+                  itemCount: widget.groups.length,
+                  itemBuilder: (_, i) {
+                    final g = widget.groups[i];
+                    return _CompanyCard(
+                      group: g,
+                      enabled: _enabled.contains(g.company),
+                      controller: _titles[g.company]!,
+                      onToggle: () => setState(() {
+                        if (!_enabled.remove(g.company)) {
+                          _enabled.add(g.company);
+                        }
+                      }),
+                    );
+                  },
+                );
+              },
             ),
           ),
 
@@ -269,38 +232,49 @@ class _ImportOfferSetupPageState extends State<ImportOfferSetupPage> {
             ),
             child: SafeArea(
               top: false,
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
+              child: Row(
                 children: [
-                  // سبب التعطيل يُقال لا يُترك للتخمين: زرٌّ رماديٌّ بلا
-                  // تفسير يُوقف المستخدم بلا أن يدلّه على ما ينقص.
-                  if (blocker != null) ...[
-                    Text(blocker,
-                        style: context.text.labelSmall
-                            ?.copyWith(color: tk.warning)),
-                    const SizedBox(height: AppSpacing.sm),
-                  ],
-                  Row(
-                    children: [
-                      Expanded(
-                        child: AppButton(
-                          label: 'بلا عروض',
-                          variant: AppButtonVariant.outline,
-                          // المزامنة تمضي والمخزون يُكتب، ولا يُنشأ عرض.
-                          onPressed: () =>
-                              Navigator.of(context).pop(<ImportOfferPlan>[]),
-                        ),
-                      ),
-                      const SizedBox(width: AppSpacing.md),
-                      Expanded(
-                        flex: 2,
-                        child: AppButton(
-                          label: 'مزامنة وإنشاء العروض',
-                          appIcon: AppIcons.check,
-                          onPressed: blocker == null ? _submit : null,
-                        ),
-                      ),
-                    ],
+                  // سبب التعطيل يُقال لا يُترك للتخمين.
+                  Expanded(
+                    child: blocker != null
+                        ? Row(
+                            children: [
+                              AppIcon(AppIcons.alertTriangle,
+                                  size: 14, color: tk.warning),
+                              const SizedBox(width: AppSpacing.sm),
+                              Expanded(
+                                child: Text(blocker,
+                                    style: context.text.labelSmall
+                                        ?.copyWith(color: tk.warning)),
+                              ),
+                            ],
+                          )
+                        : Text(
+                            'سيُنشأ ${_enabled.length} '
+                            '${_enabled.length == 1 ? "عرض" : "عروض"} '
+                            'على ${_regions.length} منطقة',
+                            style: context.text.labelSmall
+                                ?.copyWith(color: tk.hint),
+                          ),
+                  ),
+                  const SizedBox(width: AppSpacing.md),
+                  SizedBox(
+                    width: 150,
+                    child: AppButton(
+                      label: 'بلا عروض',
+                      variant: AppButtonVariant.outline,
+                      onPressed: () =>
+                          Navigator.of(context).pop(<ImportOfferPlan>[]),
+                    ),
+                  ),
+                  const SizedBox(width: AppSpacing.md),
+                  SizedBox(
+                    width: 260,
+                    child: AppButton(
+                      label: 'مزامنة وإنشاء العروض',
+                      appIcon: AppIcons.check,
+                      onPressed: blocker == null ? _submit : null,
+                    ),
                   ),
                 ],
               ),
@@ -312,31 +286,101 @@ class _ImportOfferSetupPageState extends State<ImportOfferSetupPage> {
   }
 }
 
-class _NoteCard extends StatelessWidget {
-  const _NoteCard({required this.count});
-  final int count;
+/// ترويسة الاستهداف — قرارٌ واحد يسري على كل العروض، ثابتٌ فوق الشبكة.
+class _TargetingHeader extends StatelessWidget {
+  const _TargetingHeader({
+    required this.regions,
+    required this.onRegionsChanged,
+    required this.startsAt,
+    required this.expiresAt,
+    required this.standing,
+    required this.onPickStart,
+    required this.onPickEnd,
+    required this.onStandingChanged,
+  });
+
+  final List<TargetRegion> regions;
+  final ValueChanged<List<TargetRegion>> onRegionsChanged;
+  final DateTime startsAt;
+  final DateTime? expiresAt;
+  final bool standing;
+  final VoidCallback onPickStart;
+  final VoidCallback onPickEnd;
+  final ValueChanged<bool> onStandingChanged;
 
   @override
   Widget build(BuildContext context) {
+    final cs = context.colors;
     final tk = context.tokens;
 
     return Container(
-      padding: const EdgeInsets.all(AppSpacing.md),
+      padding: const EdgeInsets.fromLTRB(
+          AppSpacing.page, AppSpacing.md, AppSpacing.page, AppSpacing.md),
       decoration: BoxDecoration(
-        color: tk.brandSurface,
-        borderRadius: BorderRadius.circular(AppRadius.lg),
+        color: cs.surface,
+        border: Border(bottom: BorderSide(color: cs.outline)),
       ),
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
+      child: Wrap(
+        spacing: AppSpacing.xl,
+        runSpacing: AppSpacing.md,
+        crossAxisAlignment: WrapCrossAlignment.center,
         children: [
-          AppIcon(AppIcons.info, size: 18, color: context.colors.primary),
-          const SizedBox(width: AppSpacing.sm),
-          Expanded(
-            child: Text(
-              'وجد الوكيل شروطاً تجارية (خصم أو بونص) في $count '
-              '${count == 1 ? "شركة" : "شركات"}. تُنشأ العروض '
-              '«مسوّدة» فلا يراها أحد حتى تنشرها من شاشة العروض.',
-              style: context.text.bodySmall,
+          SizedBox(
+            width: 420,
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Row(
+                  children: [
+                    AppIcon(AppIcons.mapPin, size: 14, color: cs.primary),
+                    const SizedBox(width: AppSpacing.xs),
+                    Text('المناطق المستهدفة',
+                        style: context.text.labelMedium),
+                    const SizedBox(width: AppSpacing.sm),
+                    Text('افتراضياً كل مناطق تغطيتك',
+                        style: context.text.labelSmall
+                            ?.copyWith(color: tk.hint)),
+                  ],
+                ),
+                const SizedBox(height: AppSpacing.xs),
+                MultiRegionPicker(
+                    regions: regions, onChanged: onRegionsChanged),
+              ],
+            ),
+          ),
+
+          Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              _DateField(
+                  label: 'يبدأ في', date: startsAt, onTap: onPickStart),
+              const SizedBox(width: AppSpacing.md),
+              if (!standing)
+                _DateField(
+                    label: 'ينتهي في',
+                    date: expiresAt ?? startsAt,
+                    onTap: onPickEnd),
+            ],
+          ),
+
+          InkWell(
+            onTap: () => onStandingChanged(!standing),
+            borderRadius: BorderRadius.circular(AppRadius.sm),
+            child: Padding(
+              padding: const EdgeInsets.symmetric(
+                  horizontal: AppSpacing.sm, vertical: AppSpacing.xs),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  AppCheckbox(
+                    selection:
+                        standing ? AppCheckState.all : AppCheckState.none,
+                  ),
+                  const SizedBox(width: AppSpacing.sm),
+                  Text('عرض دائم', style: context.text.bodySmall),
+                ],
+              ),
             ),
           ),
         ],
@@ -360,44 +404,47 @@ class _CompanyCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final cs = context.colors;
     final tk = context.tokens;
 
-    return AppCard(
+    // المُفعَّل يُميَّز بحدٍّ وسطحٍ لا بلونٍ مختلف: البطاقة المُطفأة تبقى
+    // مقروءة — هي خيارٌ متاح لا شيء مُستبعَد.
+    return AnimatedContainer(
+      duration: const Duration(milliseconds: 180),
+      padding: const EdgeInsets.all(AppSpacing.md),
+      decoration: BoxDecoration(
+        color: enabled ? tk.brandSurface : cs.surface,
+        borderRadius: BorderRadius.circular(AppRadius.lg),
+        border: Border.all(
+          color: enabled ? cs.primary.withValues(alpha: 0.6) : cs.outline,
+          width: enabled ? 1.6 : 1,
+        ),
+      ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Row(
-            children: [
-              Expanded(
-                child: InkWell(
-                  onTap: onToggle,
-                  borderRadius: BorderRadius.circular(AppRadius.sm),
-                  child: Padding(
-                    padding:
-                        const EdgeInsets.symmetric(vertical: AppSpacing.xs),
-                    child: Row(
-                      children: [
-                        AppCheckbox(
-                          selection: enabled
-                              ? AppCheckState.all
-                              : AppCheckState.none,
-                        ),
-                        const SizedBox(width: AppSpacing.sm),
-                        Expanded(
-                          child: Text(group.label,
-                              style: context.text.labelLarge),
-                        ),
-                      ],
-                    ),
-                  ),
+          InkWell(
+            onTap: onToggle,
+            borderRadius: BorderRadius.circular(AppRadius.sm),
+            child: Row(
+              children: [
+                AppCheckbox(
+                  selection:
+                      enabled ? AppCheckState.all : AppCheckState.none,
                 ),
-              ),
-              const SizedBox(width: AppSpacing.sm),
-              StatusBadge(
-                label: '${group.rows.length} بنداً',
-                tone: StatusTone.neutral,
-              ),
-            ],
+                const SizedBox(width: AppSpacing.sm),
+                Expanded(
+                  child: Text(group.label,
+                      style: context.text.labelLarge,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis),
+                ),
+                StatusBadge(
+                  label: '${group.rows.length} بنداً',
+                  tone: StatusTone.neutral,
+                ),
+              ],
+            ),
           ),
           const SizedBox(height: AppSpacing.xs),
           Wrap(
@@ -406,27 +453,24 @@ class _CompanyCard extends StatelessWidget {
             children: [
               if (group.discounted > 0)
                 StatusBadge(
-                  label: 'خصم على ${group.discounted}',
-                  tone: StatusTone.info,
-                ),
+                    label: 'خصم على ${group.discounted}',
+                    tone: StatusTone.info),
               if (group.bonused > 0)
                 BonusBadge(label: 'بونص على ${group.bonused}'),
             ],
           ),
-          if (enabled) ...[
-            const SizedBox(height: AppSpacing.sm),
+          const Spacer(),
+          if (enabled)
             AppTextField(
               controller: controller,
               label: 'عنوان العرض',
-              hint: 'ما يراه الصيدلي في قائمة العروض',
-            ),
-          ] else ...[
-            const SizedBox(height: AppSpacing.xs),
+              hint: 'ما يراه الصيدلي',
+            )
+          else
             Text(
-              'لن يُنشأ عرض لهذه الشركة — أصنافها تُزامَن في مخزونك كالمعتاد.',
+              'لن يُنشأ عرض — أصنافها تُزامَن في مخزونك كالمعتاد.',
               style: context.text.labelSmall?.copyWith(color: tk.hint),
             ),
-          ],
         ],
       ),
     );
@@ -453,26 +497,26 @@ class _DateField extends StatelessWidget {
       borderRadius: BorderRadius.circular(AppRadius.md),
       child: Container(
         padding: const EdgeInsets.symmetric(
-            horizontal: AppSpacing.md, vertical: AppSpacing.md),
+            horizontal: AppSpacing.md, vertical: AppSpacing.sm),
         decoration: BoxDecoration(
           border: Border.all(color: cs.outline),
           borderRadius: BorderRadius.circular(AppRadius.md),
         ),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
+          mainAxisSize: MainAxisSize.min,
           children: [
             Text(label,
                 style: context.text.labelSmall
                     ?.copyWith(color: context.tokens.hint)),
             const SizedBox(height: 2),
             Row(
+              mainAxisSize: MainAxisSize.min,
               children: [
                 AppIcon(AppIcons.calendar, size: 14, color: cs.primary),
                 const SizedBox(width: AppSpacing.xs),
-                Text(
-                  '${date.year}/${date.month}/${date.day}',
-                  style: context.text.bodySmall,
-                ),
+                Text('${date.year}/${date.month}/${date.day}',
+                    style: context.text.bodySmall),
               ],
             ),
           ],
@@ -480,17 +524,4 @@ class _DateField extends StatelessWidget {
       ),
     );
   }
-}
-
-class _StandingHint extends StatelessWidget {
-  const _StandingHint({required this.hint});
-  final Color hint;
-
-  @override
-  Widget build(BuildContext context) => Container(
-        padding: const EdgeInsets.symmetric(
-            horizontal: AppSpacing.md, vertical: AppSpacing.md),
-        child: Text('بلا تاريخ انتهاء',
-            style: context.text.bodySmall?.copyWith(color: hint)),
-      );
 }

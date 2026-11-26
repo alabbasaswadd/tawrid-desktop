@@ -67,6 +67,10 @@ class InventoryImportRepository {
   /// الصفوف تُمرَّر صريحةً دائماً: لا يُكتب في مخزون أحدٍ ما لم يره ويوافق.
   /// [offers] عروضٌ تُنشأ مسوّدةً من بنود الملف، واحدٌ لكل شركة أقرّها
   /// المستخدم. فارغةً لا يُنشأ عرض — وهو الوضع الطبيعي لملف جردٍ صرف.
+  ///
+  /// مهلته طويلةٌ عمداً: الكتابة تمرّ على كل صنفٍ مختار ثم تُنشئ العروض،
+  /// وملفٌ بمئتي صنفٍ يأخذ دقائق. والمهلة العامة (ثلاثون ثانية) كانت
+  /// تقطع الطلب والخادم ما زال يكتب — فيُسقِط الردّ لا العمل.
   Future<ImportReport> apply(
     String jobId, {
     required List<String> selectedRowIds,
@@ -83,6 +87,7 @@ class InventoryImportRepository {
         if (offers.isNotEmpty)
           'offers': offers.map((o) => o.toJson()).toList(),
       },
+      receiveTimeout: const Duration(minutes: 20),
     ) as Map<String, dynamic>;
 
     return ImportReport.fromJson(data);

@@ -201,9 +201,17 @@ class ImportRow {
   static String _num(double v) =>
       v == v.roundToDouble() ? v.toStringAsFixed(0) : v.toString();
 
-  /// هل فيه قرارٌ يُتَّخذ؟ غير الموجود لا يمكن استيراده أصلاً.
-  bool get isActionable =>
-      matchStatus != ImportMatch.notFound && matched != null;
+  /// هل يمكن استيراده؟
+  ///
+  /// نعم ولو لم يُطابِق الكتالوج: المستودع يحمل مكمّلاتٍ ومستحضرات
+  /// ومستوردات لا وجود لها في النشرة الوطنية، ومنعُها كان يُخرج ثلث
+  /// الملف من مخزون صاحبه. فتُضاف باسمها وعيارها كما قرأهما الوكيل.
+  ///
+  /// والشرط الباقي أن يكون له اسم: صفٌّ بلا اسمٍ لا شيء فيه يُضاف.
+  bool get isActionable => name.isNotEmpty;
+
+  /// صنفٌ حرّ — يُضاف بهويّته لا بمرجعٍ في الكتالوج.
+  bool get isCatalogFree => matched == null;
 
   factory ImportRow.fromJson(Map<String, dynamic> j) => ImportRow(
         id: j['id'] as String,
@@ -470,6 +478,17 @@ class ImportAppliedItem {
   /// السعر قبل التعديل — للمُعدَّل وحده، فيكون التغيير مفهوماً.
   final double? previousPrice;
 
+  /// من صفٍّ انتهت مزامنته — طريق التقرير حين يُبنى محلياً.
+  factory ImportAppliedItem.fromRow(ImportRow row) => ImportAppliedItem(
+        rowNumber: row.rowNumber,
+        displayName: row.matched?.displayName ?? row.name,
+        strength: row.matched?.strength ?? row.strength ?? 0,
+        manufacturerName:
+            row.matched?.manufacturerName ?? row.manufacturer ?? '',
+        price: row.price,
+        previousPrice: row.previousPrice,
+      );
+
   factory ImportAppliedItem.fromJson(Map<String, dynamic> j) =>
       ImportAppliedItem(
         rowNumber: (j['rowNumber'] as num?)?.toInt() ?? 0,
@@ -629,6 +648,145 @@ class ImportReport {
           .whereType<Map<String, dynamic>>()
           .map(ImportAppliedItem.fromJson)
           .toList();
+
+  /// تقرير يُبنى من حصيلة الصفوف حين يضيع ردّ التطبيق في الطريق.
+  ///
+  /// الكتابة تجري في الخادم لا في الطريق إليه: فإن سقط الاتصال بعد أن
+  /// تمّت، فالحقيقة كاملةٌ في الصفوف — لكل صفٍّ حصيلتُه وسببُها. وقراءتها
+  /// منها أصدق من ترك المستخدم أمام شاشةٍ لا تنتهي عن عملٍ قد نجح، أو
+  /// إخباره بعطلٍ لم يقع.
+  ///
+  /// تقرير من أخبار القناة نفسها — آخر ما يُلجأ إليه.
+  ///
+  /// حين يضيع الردّ ولا تعود الصفوف بحصيلتها، يبقى ما رآه المستخدم يمرّ
+  /// أمامه صنفاً صنفاً. وهو ناقصٌ بطبعه — لا يعرف إلا ما وصل — لكنّ
+  /// «أُضيف مئتان وستون» أصدق من «لم يُزامَن شيء» عن مزامنةٍ تمّت.
+  factory ImportReport.fromItemEvents({
+    required String jobId,
+    required List<ImportItemEvent> events,
+    List<ImportOfferEvent> offerEvents = const [],
+  }) {
+    final added = <ImportAppliedItem>[];
+    final modified = <ImportAppliedItem>[];
+    final failed = <ImportFailure>[];
+    var skipped = 0;
+
+    // صفٌّ واحد لكل رقم: القناة قد تُعيد إرسال ما أرسلت بعد عودة اتصال.
+    final seen = <int>{};
+    for (final e in events) {
+      if (!seen.add(e.rowNumber)) continue;
+      final item = ImportAppliedItem(
+        rowNumber: e.rowNumber,
+        displayName: e.name,
+        price: e.price,
+        previousPrice: e.previousPrice,
+      );
+      switch (e.outcome) {
+        case ImportOutcome.added:
+          added.add(item);
+        case ImportOutcome.repriced:
+          modified.add(item);
+        case ImportOutcome.failed:
+          failed.add(ImportFailure(
+            rowNumber: e.rowNumber,
+            name: e.name,
+            message: e.message ?? 'تعذّرت الإضافة',
+          ));
+        case ImportOutcome.skipped:
+          skipped++;
+        case ImportOutcome.pending:
+          break;
+      }
+    }
+
+    return ImportReport(
+      jobId: jobId,
+      added: added,
+      modified: modified,
+      failed: failed,
+      skippedCount: skipped,
+      offers: _createdOffers(offerEvents),
+      offerFailures: _failedOffers(offerEvents),
+    );
+  }
+
+  /// [offerEvents] ما وصل عن العروض على القناة الفورية: حالة المهمة لا
+  /// تحمل العروض، وهذه وحدها تعرف أيّها أُنشئ وأيّها تعذّر.
+  factory ImportReport.fromRows({
+    required String jobId,
+    required List<ImportRow> rows,
+    List<ImportOfferEvent> offerEvents = const [],
+  }) {
+    final added = <ImportAppliedItem>[];
+    final modified = <ImportAppliedItem>[];
+    final failed = <ImportFailure>[];
+    var skipped = 0;
+
+    for (final row in rows) {
+      switch (row.outcome) {
+        case ImportOutcome.added:
+          added.add(ImportAppliedItem.fromRow(row));
+        case ImportOutcome.repriced:
+          modified.add(ImportAppliedItem.fromRow(row));
+        case ImportOutcome.failed:
+          failed.add(ImportFailure(
+            rowNumber: row.rowNumber,
+            name: row.matched?.displayName ?? row.name,
+            message: row.outcomeMessage ?? 'تعذّرت الإضافة',
+          ));
+        case ImportOutcome.skipped:
+          skipped++;
+        case ImportOutcome.pending:
+          break;
+      }
+    }
+
+    return ImportReport(
+      jobId: jobId,
+      added: added,
+      modified: modified,
+      failed: failed,
+      skippedCount: skipped,
+      offers: _createdOffers(offerEvents),
+      offerFailures: _failedOffers(offerEvents),
+    );
+  }
+
+  /// خبرٌ واحد لكل شركة: القناة قد تُعيد الإرسال بعد انقطاعٍ وعودة،
+  /// فيظهر العرض الواحد مرّتين في التقرير بلا هذا.
+  static List<ImportOfferEvent> _byCompany(List<ImportOfferEvent> events) {
+    final seen = <String>{};
+    return [
+      for (final e in events)
+        if (seen.add(e.company.trim().toLowerCase())) e,
+    ];
+  }
+
+  static List<ImportCreatedOffer> _createdOffers(
+    List<ImportOfferEvent> events,
+  ) =>
+      [
+        for (final e in _byCompany(events))
+          if (e.created)
+            ImportCreatedOffer(
+              offerId: e.offerId!,
+              company: e.company,
+              title: e.title,
+              itemCount: e.itemCount,
+            ),
+      ];
+
+  static List<ImportOfferFailure> _failedOffers(
+    List<ImportOfferEvent> events,
+  ) =>
+      [
+        for (final e in _byCompany(events))
+          if (!e.created)
+            ImportOfferFailure(
+              company: e.company,
+              message: e.message ?? 'تعذّر إنشاء العرض',
+            ),
+      ];
 }
 
 /// صنفٌ فرغت المزامنة منه — يصل واحداً واحداً أثناء التطبيق.

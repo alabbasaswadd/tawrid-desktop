@@ -78,16 +78,18 @@ void main() {
       expect(row.isActionable, isTrue);
     });
 
-    test('غير الموجود ليس قابلاً للتنفيذ ولو حُدِّد', () {
+    test('ما لم يُطابِق الكتالوج يبقى قابلاً للاستيراد', () {
+      // المستودع يحمل مكمّلاتٍ ومستوردات لا وجود لها في النشرة الوطنية،
+      // ومنعُها كان يُخرج ثلثَ الملف من مخزون صاحبه.
       final row = ImportRow.fromJson(rowJson(match: 3));
       expect(row.matchStatus, ImportMatch.notFound);
-      expect(row.isActionable, isFalse);
+      expect(row.isActionable, isTrue);
+      expect(row.isCatalogFree, isTrue);
     });
 
-    test('المطابقة بلا صنف ليست قابلة للتنفيذ', () {
-      // matched فارغ مع حالة «مطابق» — تعارضٌ لا يجوز أن يُنتج إضافةً
-      // بلا صنف كتالوج.
-      final row = ImportRow.fromJson(rowJson(matched: null));
+    test('الصفّ بلا اسم لا شيء فيه يُضاف', () {
+      final json = rowJson()..['name'] = '';
+      final row = ImportRow.fromJson(json);
       expect(row.isActionable, isFalse);
     });
 
@@ -188,6 +190,103 @@ void main() {
       expect(event.phase, ImportStatus.analyzing);
       expect(event.done, 60);
       expect(event.activity, contains('الدفعة'));
+    });
+  });
+
+  group('تقرير يُنقَذ حين يضيع ردّ التطبيق', () {
+    ImportRow row(int number, String name, int outcome, {double? price}) =>
+        ImportRow.fromJson({
+          'id': 'row-$number',
+          'rowNumber': number,
+          'name': name,
+          'matchStatus': 1,
+          'selected': true,
+          'price': price,
+          'outcome': outcome,
+        });
+
+    ImportOfferEvent offerEvent({
+      String company = 'فاركو',
+      String? offerId = 'offer-1',
+      String? message,
+    }) =>
+        ImportOfferEvent.fromJson({
+          'jobId': 'job-1',
+          'offerId': offerId,
+          'company': company,
+          'title': 'عرض $company',
+          'itemCount': 12,
+          'message': message,
+          'done': 1,
+          'total': 2,
+        });
+
+    test('حصيلة الصفوف تُفرَز كما يفرزها الخادم', () {
+      final report = ImportReport.fromRows(
+        jobId: 'job-1',
+        rows: [
+          row(1, 'أموكسيل', 1, price: 8000),
+          row(2, 'بانادول', 2, price: 13000),
+          row(3, 'دواء', 4),
+          row(4, 'مكرّر', 3),
+          row(5, 'لم يُمسّ', 0),
+        ],
+      );
+
+      expect(report.added.single.displayName, 'أموكسيل');
+      expect(report.modified.single.price, 13000);
+      expect(report.failed.single.rowNumber, 3);
+      expect(report.skippedCount, 1);
+      // الصفّ المعلّق لا يُحسب في شيء: لم يُكتب ولم يتعذّر.
+      expect(report.total, 2);
+    });
+
+    test('أخبار العروض تُقسَم بين ما أُنشئ وما تعذّر، بلا تكرار', () {
+      final report = ImportReport.fromRows(
+        jobId: 'job-1',
+        rows: const [],
+        offerEvents: [
+          offerEvent(),
+          // الخبر نفسه وصل مرّتين بعد عودة اتصال.
+          offerEvent(),
+          offerEvent(company: 'ابن الهيثم', offerId: null, message: 'تعذّر'),
+        ],
+      );
+
+      expect(report.offers, hasLength(1));
+      expect(report.offers.single.company, 'فاركو');
+      expect(report.offerFailures.single.message, 'تعذّر');
+    });
+
+    test('أخبار القناة تكفي حين تعود الصفوف بلا حصيلة', () {
+      final report = ImportReport.fromItemEvents(
+        jobId: 'job-1',
+        events: [
+          ImportItemEvent.fromJson({
+            'jobId': 'job-1',
+            'rowNumber': 1,
+            'name': 'أموكسيل',
+            'outcome': 1,
+            'price': 8000,
+            'done': 1,
+            'total': 2,
+          }),
+          ImportItemEvent.fromJson({
+            'jobId': 'job-1',
+            'rowNumber': 2,
+            'name': 'بانادول',
+            'outcome': 2,
+            'price': 13000,
+            'previousPrice': 12500,
+            'done': 2,
+            'total': 2,
+          }),
+        ],
+      );
+
+      expect(report.added.single.displayName, 'أموكسيل');
+      expect(report.modified.single.previousPrice, 12500);
+      expect(report.total, 2);
     });
   });
 

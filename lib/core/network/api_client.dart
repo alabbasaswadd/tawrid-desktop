@@ -58,8 +58,24 @@ class ApiClient {
     return _unwrap(res.data);
   }
 
-  Future<dynamic> post(String path, {dynamic data}) async {
-    final res = await _dio.post(path, data: data);
+  /// [receiveTimeout] يتجاوز مهلة الاستقبال العامة لهذا الطلب وحده.
+  ///
+  /// المهلة العامة (ثلاثون ثانية) مقيسةٌ على طلبٍ يقرأ أو يكتب سطراً،
+  /// وهي أقصر من عمليةٍ واحدة في الخادم تمرّ على مئات الأصناف. وبلا
+  /// تجاوزها هنا كان الطلب الطويل يسقط بمهلةٍ انقضت بينما الخادم ما زال
+  /// يعمل — فيظنّ المستخدم أن شيئاً لم يحدث وقد حدث.
+  Future<dynamic> post(
+    String path, {
+    dynamic data,
+    Duration? receiveTimeout,
+  }) async {
+    final res = await _dio.post(
+      path,
+      data: data,
+      options: receiveTimeout == null
+          ? null
+          : Options(receiveTimeout: receiveTimeout),
+    );
     return _unwrap(res.data);
   }
 

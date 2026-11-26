@@ -55,8 +55,21 @@ class _WhImportInventoryPageState extends ConsumerState<WhImportInventoryPage> {
   int _syncDone = 0;
   int _syncTotal = 0;
 
-  /// العروض التي أُنشئت أثناء المزامنة — الأحدث أولاً.
+  /// أخبار العروض كما وصلت من الخادم — الأحدث أولاً.
   final List<ImportOfferEvent> _syncOffers = [];
+
+  /// العروض التي أقرّها المستخدم، بترتيب إقرارها.
+  ///
+  /// تُحفَظ عند الضغط على «مزامنة» لا عند وصول خبرها: بطاقةُ العرض يجب
+  /// أن تكون أمام العين قبل إنشائه لا بعده — فيرى المستخدم ما يُنتظر
+  /// إنشاؤه وما أُنشئ، بدل قائمةٍ تنبت من العدم ولا يعرف متى تكتمل.
+  List<_PlannedOffer> _offerPlans = const [];
+
+  /// سقط ردّ التطبيق والكتابة ماضيةٌ في الخادم.
+  ///
+  /// ليس عطلاً يُعرَض: الطلب طريقٌ لا عمل، وانقطاعه لا يوقف ما بدأ هناك.
+  /// فتُكمل الشاشة بالاستعلام الدوري وتقول للمستخدم من أين تتابع.
+  bool _detached = false;
 
   /// تعديلات المستخدم في المراجعة — تُرسل عند التطبيق.
   final Map<String, double?> _priceOverrides = {};
@@ -68,6 +81,21 @@ class _WhImportInventoryPageState extends ConsumerState<WhImportInventoryPage> {
   // استطلاعٌ احتياطي: القناة الفورية تسريعٌ لا ضمان، وإن سقطت يجب أن
   // تُكمل الشاشة بدل أن تتجمّد على آخر إطار وصلها.
   Timer? _poll;
+
+  /// مراقبة التطبيق — مستقلّة عن [_poll] لأن عملها مختلف.
+  ///
+  /// ذاك يتابع التحليل ويتوقّف متى خرجت المهمة من مراحله، وهذه تبدأ حيث
+  /// يقف ولا تنتهي إلا بانتهاء الكتابة.
+  Timer? _applyWatch;
+
+  /// استعلاماتٌ متتالية لم تصل — عدّادُ صبرٍ على طريقٍ ساقط.
+  int _watchMisses = 0;
+
+  /// آخر لحظةٍ تُنتظر فيها نهاية المزامنة.
+  ///
+  /// مهمةٌ عالقة في الخادم لا تُصلحها شاشةٌ تنتظر إلى الأبد: بعد المهلة
+  /// تُعاد المراجعة برسالةٍ تقول أين يُراجع ما كُتب.
+  DateTime? _applyDeadline;
 
   @override
   void initState() {
@@ -82,6 +110,7 @@ class _WhImportInventoryPageState extends ConsumerState<WhImportInventoryPage> {
       sub.cancel();
     }
     _poll?.cancel();
+    _applyWatch?.cancel();
     super.dispose();
   }
 
@@ -152,6 +181,11 @@ class _WhImportInventoryPageState extends ConsumerState<WhImportInventoryPage> {
       };
 
   /// مهمة كانت جارية قبل إغلاق الشاشة — تُستأنف بدل أن تضيع.
+  ///
+  /// الالتقاط هنا وفي أخواته `on Object` لا `on ApiException`: طبقة
+  /// الشبكة ترمي `DioException`، و`ApiException` تُشتقّ منها عند العرض
+  /// لا قبله. والتقاطُ النوع الخطأ لا يُسقط رسالةً فحسب — بل يترك
+  /// الشاشة على حالها الأخير بلا نهاية.
   Future<void> _resumeActive() async {
     try {
       final job = await ref.read(inventoryImportRepositoryProvider).active();
@@ -159,10 +193,21 @@ class _WhImportInventoryPageState extends ConsumerState<WhImportInventoryPage> {
       _adopt(job);
       if (job.status == ImportStatus.ready) {
         await _loadJob(job.jobId);
+      } else if (job.status == ImportStatus.applying) {
+        // مزامنةٌ تركها وعاد: تُستأنف شاشتها بدل أن تُستقبل الشاشة
+        // الأولى — فلا يرفع الملف ثانيةً على مخزونٍ يُكتب الآن.
+        setState(() {
+          _applying = true;
+          _syncTotal = 0;
+          _watchMisses = 0;
+          _applyDeadline = DateTime.now().add(const Duration(minutes: 30));
+          _activity = 'يزامن مع مخزونك…';
+        });
+        _watchApply(job.jobId);
       } else {
         _startPolling();
       }
-    } on ApiException {
+    } on Object {
       // لا مهمة أو تعذّر السؤال — الشاشة تبدأ من الصفر بلا إزعاج.
     }
   }
@@ -192,6 +237,7 @@ class _WhImportInventoryPageState extends ConsumerState<WhImportInventoryPage> {
       _rows = const [];
       _syncItems.clear();
       _syncOffers.clear();
+      _offerPlans = const [];
       _syncDone = 0;
       _syncTotal = 0;
       _priceOverrides.clear();
@@ -226,11 +272,11 @@ class _WhImportInventoryPageState extends ConsumerState<WhImportInventoryPage> {
       });
 
       _startPolling();
-    } on ApiException catch (e) {
+    } on Object catch (e) {
       if (!mounted) return;
       setState(() {
         _uploading = false;
-        _error = e.message;
+        _error = ApiException.from(e).message;
       });
     }
   }
@@ -267,9 +313,9 @@ class _WhImportInventoryPageState extends ConsumerState<WhImportInventoryPage> {
           .get(jobId, includeRows: includeRows);
       if (!mounted) return;
       _adopt(job);
-    } on ApiException catch (e) {
+    } on Object catch (e) {
       if (!mounted || silent) return;
-      setState(() => _error = e.message);
+      setState(() => _error = ApiException.from(e).message);
     }
   }
 
@@ -435,15 +481,29 @@ class _WhImportInventoryPageState extends ConsumerState<WhImportInventoryPage> {
       offers = chosen;
     }
 
+    // الاستطلاع الأول يتوقّف هنا: المهمة غادرت مراحل التحليل، ومراقبة
+    // التطبيق تأخذ مكانه.
+    _poll?.cancel();
+
     setState(() {
       _applying = true;
+      _detached = false;
       _syncItems.clear();
       _syncOffers.clear();
       _syncDone = 0;
       _syncTotal = selected.length;
+      _offerPlans = _plannedOffers(groups, offers);
+      _watchMisses = 0;
+      _applyDeadline = DateTime.now().add(const Duration(minutes: 30));
       _activity = 'يزامن مع مخزونك…';
       _error = null;
     });
+
+    // المراقبة تبدأ مع الطلب لا بعد سقوطه: الكتابة تجري في الخادم سواءٌ
+    // وصل الردّ أم لا، وسؤالٌ دوريٌّ عنها يُنهي الشاشة بالحقيقة مهما جرى
+    // للطلب نفسه. وهذا أصل العطب الذي كان: ردٌّ انقضت مهلته لا يصل أبداً،
+    // ولا شيء خلفه يسأل — فتبقى الشاشة على «يزامن…» إلى ما لا نهاية.
+    _watchApply(job.jobId);
 
     try {
       final report =
@@ -455,19 +515,209 @@ class _WhImportInventoryPageState extends ConsumerState<WhImportInventoryPage> {
                 offers: offers,
               );
       if (!mounted) return;
-      setState(() {
-        _applying = false;
-        _report = report;
-      });
-    } on ApiException catch (e) {
-      if (!mounted) return;
-      // يعود إلى المراجعة لا إلى شاشةٍ فارغة: تحديداته وتعديلاته ما زالت
-      // في يده، فيُصلح ما يلزم ويُعيد المحاولة بلا أن يرفع الملف ثانيةً.
-      setState(() {
-        _applying = false;
-        _error = e.message;
-      });
+      _finishApply(report);
+    } on Object catch (e) {
+      if (!mounted || !_applying) return;
+      // `on ApiException` كانت تُخطئ الهدف: ما يرميه Dio عند انقضاء
+      // المهلة `DioException` لا `ApiException`، فكان العطل يُفلت من
+      // الالتقاط ويبقى `_applying` صحيحاً إلى الأبد.
+      final err = ApiException.from(e);
+
+      // عطل الطريق لا يُبطل ما يكتبه الخادم — تُكمل المراقبة وتُخبر
+      // الشاشةُ المستخدمَ من أين تتابع. وما عداه ردٌّ صريح بالرفض:
+      // يعود إلى المراجعة بتحديداته كما هي فيُصلح ويُعيد، بلا رفع الملف.
+      if (err.isNetwork) {
+        setState(() => _detached = true);
+        return;
+      }
+      _stopApply(err.message);
     }
+  }
+
+  /// بطاقات العروض كما ستُعرَض — من الخطة لا من الأخبار.
+  static List<_PlannedOffer> _plannedOffers(
+    List<ImportOfferGroup> groups,
+    List<ImportOfferPlan> plans,
+  ) {
+    final counts = {
+      for (final g in groups) _companyKey(g.company): g.rows.length,
+    };
+    return [
+      for (final plan in plans)
+        _PlannedOffer(
+          company: plan.company,
+          title: plan.title,
+          itemCount: counts[_companyKey(plan.company)] ?? 0,
+        ),
+    ];
+  }
+
+  static String _companyKey(String company) => company.trim().toLowerCase();
+
+  /// يراقب الكتابة في الخادم حتى تنتهي.
+  ///
+  /// حالة المهمة في قاعدة بيانات الخادم هي المرجع، لا ردُّ الطلب: الردّ
+  /// قد يضيع وقد يتأخّر، والحالة لا تكذب. وحين تصير «طُبِّقت» يُبنى
+  /// التقرير من حصيلة الصفوف نفسها.
+  void _watchApply(String jobId) {
+    _applyWatch?.cancel();
+    var busy = false;
+
+    _applyWatch = Timer.periodic(const Duration(seconds: 4), (_) async {
+      if (!mounted || !_applying || busy) return;
+
+      final deadline = _applyDeadline;
+      if (deadline != null && DateTime.now().isAfter(deadline)) {
+        _stopApply(
+          'طالت المزامنة أكثر من المعتاد — راجع «أدويتي» قبل إعادة المحاولة',
+        );
+        return;
+      }
+
+      busy = true;
+      try {
+        final job = await ref
+            .read(inventoryImportRepositoryProvider)
+            .get(jobId, includeRows: false);
+        if (!mounted || !_applying) return;
+        _watchMisses = 0;
+
+        switch (job.status) {
+          case ImportStatus.applied:
+            await _reportFromServer(jobId);
+          case ImportStatus.failed:
+            _stopApply(job.failureMessage ?? 'تعذّرت المزامنة');
+          case ImportStatus.cancelled:
+            _stopApply('أُوقفت المزامنة');
+          default:
+            // ما زالت تكتب — الأخبار تصل على القناة، ولا شيء يُقال هنا.
+            break;
+        }
+      } on Object {
+        if (!mounted || !_applying) return;
+        _watchMisses++;
+        // ما دام الطلب قائماً فسقوط استعلامٍ لا يعني شيئاً. أمّا وقد سقط
+        // الطلب أيضاً فلم يبقَ ما يُنتظر منه خبر: صمتٌ متّصلٌ على
+        // الطريقين انقطاعٌ يُقال، لا انتظارٌ بلا نهاية.
+        if (_detached && _watchMisses >= 8) {
+          _stopApply(
+            'انقطع الاتصال أثناء المزامنة — راجع «أدويتي» لتعرف ما أُضيف '
+            'قبل إعادة المحاولة',
+          );
+        }
+      } finally {
+        busy = false;
+      }
+    });
+  }
+
+  /// يبني التقرير بعد أن أعلن الخادم انتهاء الكتابة.
+  Future<void> _reportFromServer(String jobId) async {
+    try {
+      final job = await ref.read(inventoryImportRepositoryProvider).get(jobId);
+      if (!mounted || !_applying) return;
+
+      // القائمتان مقلوبتان للعرض (الأحدث أولاً)، والتقرير يُقرأ بترتيب
+      // الحدوث.
+      final offerEvents = _syncOffers.reversed.toList();
+
+      // الصفوف أولاً فهي كاملة، وأخبار القناة عند خلوّها من الحصيلة:
+      // تقريرٌ فارغ عن مزامنةٍ تمّت أسوأ من تقريرٍ ناقص عنها.
+      final settled =
+          job.rows.any((r) => r.outcome != ImportOutcome.pending);
+
+      _finishApply(settled
+          ? ImportReport.fromRows(
+              jobId: jobId,
+              rows: job.rows,
+              offerEvents: offerEvents,
+            )
+          : ImportReport.fromItemEvents(
+              jobId: jobId,
+              events: _syncItems.reversed.toList(),
+              offerEvents: offerEvents,
+            ));
+    } on Object {
+      // الصفوف لم تصل — النبضة التالية تسأل ثانيةً.
+    }
+  }
+
+  void _finishApply(ImportReport report) {
+    _applyWatch?.cancel();
+    setState(() {
+      _applying = false;
+      _detached = false;
+      _applyDeadline = null;
+      _report = report;
+    });
+  }
+
+  /// ينهي المزامنة بعطل — ويعود إلى المراجعة بتحديدات المستخدم كما هي.
+  void _stopApply(String error) {
+    _applyWatch?.cancel();
+    setState(() {
+      _applying = false;
+      _detached = false;
+      _applyDeadline = null;
+      _error = error;
+    });
+  }
+
+  /// حال كل عرضٍ الآن — خطةُ المستخدم مدموجةً بأخبار الخادم.
+  ///
+  /// البطاقات تُرسَم من الخطة بترتيبها الثابت، فيتبدّل حال الواحدة في
+  /// مكانها بدل أن تقفز القائمة مع كل خبر: قائمةٌ تُقرأ كقائمة مهامٍ
+  /// تُشطَب واحدةً بعد واحدة.
+  List<_OfferProgress> get _offerProgress {
+    // خبرٌ واحد لكل شركة — وأوّل ما في القائمة أحدثُها.
+    final events = <String, ImportOfferEvent>{};
+    for (final e in _syncOffers) {
+      events.putIfAbsent(_companyKey(e.company), () => e);
+    }
+
+    if (_offerPlans.isEmpty) {
+      return [
+        for (final e in _syncOffers.reversed) _OfferProgress.fromEvent(e),
+      ];
+    }
+
+    // أوّل عرضٍ بلا خبرٍ هو ما يُنشأ الآن — ولا يُقال ذلك قبل أوانه:
+    // الخادم يكتب الأصناف أولاً، فما قبل فراغها انتظارٌ لا إنشاء.
+    final itemsSettled = _syncTotal > 0 && _syncDone >= _syncTotal;
+    var creatingTaken = false;
+    final out = <_OfferProgress>[];
+
+    for (final plan in _offerPlans) {
+      final event = events.remove(_companyKey(plan.company));
+      if (event != null) {
+        out.add(_OfferProgress(
+          company: plan.company.isEmpty ? event.company : plan.company,
+          title: event.title.isEmpty ? plan.title : event.title,
+          itemCount: event.itemCount > 0 ? event.itemCount : plan.itemCount,
+          state: event.created ? _OfferSync.created : _OfferSync.failed,
+          message: event.message,
+        ));
+        continue;
+      }
+
+      final creating =
+          !creatingTaken && (itemsSettled || _syncOffers.isNotEmpty);
+      if (creating) creatingTaken = true;
+
+      out.add(_OfferProgress(
+        company: plan.company,
+        title: plan.title,
+        itemCount: plan.itemCount,
+        state: creating ? _OfferSync.creating : _OfferSync.queued,
+      ));
+    }
+
+    // خبرٌ عن شركةٍ ليست في الخطة — يُلحَق كما جاء بدل أن يُكتم.
+    for (final event in events.values) {
+      out.add(_OfferProgress.fromEvent(event));
+    }
+
+    return out;
   }
 
   /// يوقف المهمة الجارية بعد تأكيد.
@@ -525,11 +775,11 @@ class _WhImportInventoryPageState extends ConsumerState<WhImportInventoryPage> {
         _activity = '';
         _notice = 'أُلغي الاستيراد — لم يُضَف شيء إلى مخزونك';
       });
-    } on ApiException catch (e) {
+    } on Object catch (e) {
       if (!mounted) return;
       setState(() {
         _cancelling = false;
-        _error = e.message;
+        _error = ApiException.from(e).message;
       });
       // فشل الإلغاء يعني أنها ما زالت تعمل — فيعود الاستطلاع.
       _startPolling();
@@ -538,6 +788,7 @@ class _WhImportInventoryPageState extends ConsumerState<WhImportInventoryPage> {
 
   void _reset() {
     _poll?.cancel();
+    _applyWatch?.cancel();
     setState(() {
       _job = null;
       _report = null;
@@ -545,8 +796,11 @@ class _WhImportInventoryPageState extends ConsumerState<WhImportInventoryPage> {
       _notice = null;
       _rows = const [];
       _applying = false;
+      _detached = false;
+      _applyDeadline = null;
       _syncItems.clear();
       _syncOffers.clear();
+      _offerPlans = const [];
       _syncDone = 0;
       _syncTotal = 0;
       _progress = 0;
@@ -571,9 +825,10 @@ class _WhImportInventoryPageState extends ConsumerState<WhImportInventoryPage> {
     } else if (_applying) {
       body = _SyncingView(
         items: _syncItems,
-        offers: _syncOffers,
+        offers: _offerProgress,
         done: _syncDone,
         total: _syncTotal,
+        detached: _detached,
       );
     } else if (_uploading) {
       body = _WorkingView(
@@ -1417,12 +1672,19 @@ class _SyncingView extends StatelessWidget {
     required this.offers,
     required this.done,
     required this.total,
+    this.detached = false,
   });
 
   final List<ImportItemEvent> items;
-  final List<ImportOfferEvent> offers;
+  final List<_OfferProgress> offers;
   final int done;
   final int total;
+
+  /// سقط ردّ الطلب والخادم يُكمل — يُقال صراحةً لا يُكتَم.
+  final bool detached;
+
+  int get offersCreated =>
+      offers.where((o) => o.state == _OfferSync.created).length;
 
   @override
   Widget build(BuildContext context) {
@@ -1457,6 +1719,16 @@ class _SyncingView extends StatelessWidget {
                 style: context.text.bodySmall?.copyWith(color: tk.hint),
                 textAlign: TextAlign.center,
               ),
+              // الصمت عن انقطاعٍ وقع يجعل الشاشة تبدو واقفة. وقولُه مع
+              // «نتابع من الخادم» يُطمئن بما هو صحيح: الكتابة هناك ماضية.
+              if (detached) ...[
+                const SizedBox(height: AppSpacing.xs),
+                Text(
+                  'انقطع ردّ الطلب — نتابع الحالة من الخادم',
+                  style: context.text.labelSmall?.copyWith(color: tk.warning),
+                  textAlign: TextAlign.center,
+                ),
+              ],
               const SizedBox(height: AppSpacing.lg),
               Wrap(
                 spacing: AppSpacing.sm,
@@ -1472,9 +1744,9 @@ class _SyncingView extends StatelessWidget {
                   if (failed > 0)
                     StatusBadge(
                         label: 'تعذّر $failed', tone: StatusTone.danger),
-                  if (offers.any((o) => o.created))
+                  if (offers.isNotEmpty)
                     StatusBadge(
-                      label: 'عروض ${offers.where((o) => o.created).length}',
+                      label: 'عروض $offersCreated من ${offers.length}',
                       tone: StatusTone.brand,
                     ),
                 ],
@@ -1497,6 +1769,18 @@ class _SyncingView extends StatelessWidget {
                   padding: const EdgeInsets.fromLTRB(AppSpacing.page,
                       AppSpacing.md, AppSpacing.page, AppSpacing.lg),
                   children: [
+                    if (offers.isNotEmpty) ...[
+                      AppSectionHeader(
+                        title: 'العروض',
+                        appIcon: AppIcons.gift,
+                        trailing: Text(
+                          '$offersCreated / ${offers.length}',
+                          style: context.text.labelSmall
+                              ?.copyWith(color: tk.hint),
+                        ),
+                      ),
+                      const SizedBox(height: AppSpacing.sm),
+                    ],
                     for (final offer in offers)
                       Padding(
                         padding: const EdgeInsets.only(bottom: AppSpacing.sm),
@@ -1523,93 +1807,196 @@ class _SyncingView extends StatelessWidget {
   }
 }
 
-/// بطاقة عرضٍ أُنشئ أثناء المزامنة.
+/// عرضٌ أقرّه المستخدم وينتظر دوره في الخادم.
+class _PlannedOffer {
+  const _PlannedOffer({
+    required this.company,
+    required this.title,
+    required this.itemCount,
+  });
+
+  final String company;
+  final String title;
+
+  /// بنوده كما عُدَّت من الملف — عددٌ صادق قبل أن يردّ الخادم بعدده.
+  final int itemCount;
+}
+
+/// حال العرض الواحد في رحلته: ينتظر، يُنشأ، أُنشئ، أو تعذّر.
+enum _OfferSync { queued, creating, created, failed }
+
+/// ما تعرضه بطاقة العرض أثناء المزامنة.
+class _OfferProgress {
+  const _OfferProgress({
+    required this.company,
+    required this.title,
+    required this.itemCount,
+    required this.state,
+    this.message,
+  });
+
+  /// من خبرٍ وصل عن عرضٍ لا خطّة له — حالةٌ نادرة لكنها لا تُكتَم.
+  factory _OfferProgress.fromEvent(ImportOfferEvent e) => _OfferProgress(
+        company: e.company,
+        title: e.title,
+        itemCount: e.itemCount,
+        state: e.created ? _OfferSync.created : _OfferSync.failed,
+        message: e.message,
+      );
+
+  final String company;
+  final String title;
+  final int itemCount;
+  final _OfferSync state;
+  final String? message;
+
+  bool get settled =>
+      state == _OfferSync.created || state == _OfferSync.failed;
+}
+
+/// بطاقة عرضٍ أثناء المزامنة — بحاله الآن لا بنتيجته وحدها.
 ///
 /// بطاقةٌ لا سطر: العرض ليس صنفاً — هو حصيلة عشرات البنود، وله عنوانٌ
 /// وشركةٌ وعدد. وعرضُه بحجم السطر يُساويه بصنفٍ واحد وليس سواءً.
+///
+/// وهي تُرسَم من لحظة الإقرار لا من لحظة الإنشاء: المستخدم يرى عروضه
+/// الثلاثة أمامه، فيُشطَب الأول ثم الثاني، فيعرف كم بقي ومتى ينتهي —
+/// بدل بطاقاتٍ تظهر من العدم ولا تقول عمّا لم يظهر بعد.
 class _SyncOfferCard extends StatelessWidget {
   const _SyncOfferCard({required this.offer});
-  final ImportOfferEvent offer;
+  final _OfferProgress offer;
 
   @override
   Widget build(BuildContext context) {
     final cs = context.colors;
     final tk = context.tokens;
-    final ok = offer.created;
 
-    final fg = ok ? cs.primary : tk.danger;
-    final bg = ok ? tk.brandSurface : tk.dangerSurface;
+    final (Color fg, Color bg, AppIcons icon, String label) =
+        switch (offer.state) {
+      _OfferSync.created => (
+          tk.success,
+          tk.successSurface,
+          AppIcons.check,
+          'أُضيف العرض',
+        ),
+      _OfferSync.failed => (
+          tk.danger,
+          tk.dangerSurface,
+          AppIcons.alertTriangle,
+          'تعذّر إنشاء العرض',
+        ),
+      _OfferSync.creating => (
+          cs.primary,
+          tk.brandSurface,
+          AppIcons.gift,
+          'يُنشئ العرض الآن…',
+        ),
+      _OfferSync.queued => (
+          tk.hint,
+          cs.surface,
+          AppIcons.clock,
+          'في الانتظار',
+        ),
+    };
+
+    // ما استقرّ حالُه يدخل بحركةٍ واحدة، وما زال يُنشأ ينبض. والمنتظر
+    // ساكنٌ بلا حركة: نبضُ كل البطاقات معاً ضجيجٌ لا خبر فيه.
+    final Widget leading = offer.state == _OfferSync.creating
+        ? SizedBox(
+            width: 20,
+            height: 20,
+            child: CircularProgressIndicator(
+              strokeWidth: 2.2,
+              valueColor: AlwaysStoppedAnimation<Color>(fg),
+            ),
+          )
+        : AppIcon(icon, size: 20, color: fg);
+
+    final card = Container(
+      padding: const EdgeInsets.all(AppSpacing.md),
+      decoration: BoxDecoration(
+        color: bg,
+        borderRadius: BorderRadius.circular(AppRadius.lg),
+        border: Border.all(
+          color: fg.withValues(alpha: offer.settled ? 0.35 : 0.22),
+          width: 1.4,
+        ),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              leading,
+              const SizedBox(width: AppSpacing.sm),
+              Expanded(
+                child: Text(
+                  label,
+                  style: context.text.labelMedium?.copyWith(color: fg),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: AppSpacing.xs),
+          Text(
+            offer.title,
+            style: context.text.titleMedium?.copyWith(
+              // المنتظر أبهتُ ممّا تمّ: الفرق يُقرأ قبل أن يُقرأ النص.
+              color: offer.state == _OfferSync.queued ? tk.hint : null,
+            ),
+            maxLines: 2,
+            overflow: TextOverflow.ellipsis,
+          ),
+          const SizedBox(height: AppSpacing.xs),
+          Wrap(
+            spacing: AppSpacing.sm,
+            runSpacing: AppSpacing.xs,
+            crossAxisAlignment: WrapCrossAlignment.center,
+            children: [
+              if (offer.company.isNotEmpty)
+                StatusBadge(label: offer.company, tone: StatusTone.neutral),
+              if (offer.itemCount > 0)
+                StatusBadge(
+                  label: '${offer.itemCount} صنفاً',
+                  tone: offer.state == _OfferSync.created
+                      ? StatusTone.success
+                      : StatusTone.neutral,
+                ),
+            ],
+          ),
+          if (offer.state == _OfferSync.failed && offer.message != null) ...[
+            const SizedBox(height: AppSpacing.xs),
+            Text(
+              offer.message!,
+              style: context.text.bodySmall?.copyWith(color: tk.danger),
+            ),
+          ],
+          if (offer.state == _OfferSync.created) ...[
+            const SizedBox(height: AppSpacing.xs),
+            Text(
+              'مسوّدة — تُنشَر من شاشة العروض',
+              style: context.text.labelSmall?.copyWith(color: tk.hint),
+            ),
+          ],
+        ],
+      ),
+    );
+
+    if (offer.state == _OfferSync.creating) return _Pulse(child: card);
 
     return TweenAnimationBuilder<double>(
-      key: ValueKey('offer-${offer.company}-${offer.done}'),
+      // المفتاح بالحال لا بالشركة وحدها: تبدّلُ الحال يُعيد الحركة،
+      // فيلفت العينَ أن شيئاً حدث هنا الآن.
+      key: ValueKey('offer-${offer.company}-${offer.state.name}'),
       tween: Tween<double>(begin: 0, end: 1),
       duration: const Duration(milliseconds: 320),
       curve: Curves.easeOut,
       builder: (_, t, child) => Opacity(
         opacity: t,
-        child: Transform.translate(
-            offset: Offset(0, 12 * (1 - t)), child: child),
+        child:
+            Transform.translate(offset: Offset(0, 12 * (1 - t)), child: child),
       ),
-      child: Container(
-        padding: const EdgeInsets.all(AppSpacing.md),
-        decoration: BoxDecoration(
-          color: bg,
-          borderRadius: BorderRadius.circular(AppRadius.lg),
-          border: Border.all(color: fg.withValues(alpha: 0.35), width: 1.4),
-        ),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(
-              children: [
-                AppIcon(ok ? AppIcons.gift : AppIcons.alertTriangle,
-                    size: 20, color: fg),
-                const SizedBox(width: AppSpacing.sm),
-                Expanded(
-                  child: Text(
-                    ok ? 'أُضيف عرض' : 'تعذّر إنشاء عرض',
-                    style: context.text.labelMedium?.copyWith(color: fg),
-                  ),
-                ),
-                if (offer.total > 1)
-                  Text('${offer.done} / ${offer.total}',
-                      style: context.text.labelSmall?.copyWith(color: tk.hint)),
-              ],
-            ),
-            const SizedBox(height: AppSpacing.xs),
-            Text(offer.title,
-                style: context.text.titleMedium,
-                maxLines: 2,
-                overflow: TextOverflow.ellipsis),
-            const SizedBox(height: AppSpacing.xs),
-            Wrap(
-              spacing: AppSpacing.sm,
-              runSpacing: AppSpacing.xs,
-              crossAxisAlignment: WrapCrossAlignment.center,
-              children: [
-                if (offer.company.isNotEmpty)
-                  StatusBadge(
-                      label: offer.company, tone: StatusTone.neutral),
-                if (ok)
-                  StatusBadge(
-                    label: '${offer.itemCount} صنفاً',
-                    tone: StatusTone.brand,
-                  ),
-              ],
-            ),
-            if (!ok && offer.message != null) ...[
-              const SizedBox(height: AppSpacing.xs),
-              Text(offer.message!,
-                  style: context.text.bodySmall?.copyWith(color: tk.danger)),
-            ],
-            if (ok) ...[
-              const SizedBox(height: AppSpacing.xs),
-              Text('مسوّدة — تُنشَر من شاشة العروض',
-                  style: context.text.labelSmall?.copyWith(color: tk.hint)),
-            ],
-          ],
-        ),
-      ),
+      child: card,
     );
   }
 }
@@ -1730,7 +2117,7 @@ enum _RowFilter {
   newItem('جديد'),
   priceUpdate('تحديث سعر'),
   needsConfirm('يلزم تأكيد'),
-  notFound('غير موجود');
+  notFound('خارج الكتالوج');
 
   const _RowFilter(this.label);
   final String label;
@@ -1754,7 +2141,7 @@ enum _RowFilter {
         _RowFilter.newItem => StatusTone.success,
         _RowFilter.priceUpdate => StatusTone.info,
         _RowFilter.needsConfirm => StatusTone.warning,
-        _RowFilter.notFound => StatusTone.danger,
+        _RowFilter.notFound => StatusTone.warning,
       };
 }
 
@@ -2418,7 +2805,9 @@ class _MatchRow extends StatelessWidget {
       ImportMatch.matched => ('مطابق', StatusTone.success),
       ImportMatch.owned => ('لديك — تحديث السعر', StatusTone.info),
       ImportMatch.ambiguous => ('أكّد الصنف', StatusTone.warning),
-      ImportMatch.notFound => ('غير موجود', StatusTone.danger),
+      // لم يعد عطلاً بل وصفاً: الصنف يُضاف باسمه كما ورد في الملف،
+      // ونبرتُه تحذيرٌ لا خطر — فالمستخدم يُراجعه ولا يُمنَع منه.
+      ImportMatch.notFound => ('يُضاف باسمه', StatusTone.warning),
     };
 
     return AppCard(
