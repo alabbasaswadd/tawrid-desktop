@@ -14,6 +14,14 @@ void main() {
       expect(ImportStatus.fromCode(null), ImportStatus.pending);
     });
 
+    test('الملغاة حالةٌ مستقلّة عن الفاشلة', () {
+      // خلطهما يُري المستخدم «تعذّر الاستيراد» على أمرٍ فعله هو.
+      expect(ImportStatus.fromCode(8), ImportStatus.cancelled);
+      expect(ImportStatus.cancelled, isNot(ImportStatus.failed));
+      expect(ImportStatus.cancelled.isRunning, isFalse);
+      expect(ImportStatus.cancelled.isDone, isFalse);
+    });
+
     test('isRunning يغطّي المراحل الثلاث التي تُستطلَع', () {
       expect(ImportStatus.pending.isRunning, isTrue);
       expect(ImportStatus.analyzing.isRunning, isTrue);
@@ -190,6 +198,8 @@ void main() {
           '/tawrid-api/warehouse/medicines/import/active');
       expect(ApiEndpoints.whImportById('j1'),
           '/tawrid-api/warehouse/medicines/import/j1');
+      expect(ApiEndpoints.whImportCancel('j1'),
+          '/tawrid-api/warehouse/medicines/import/j1/cancel');
       expect(ApiEndpoints.whImportApply('j1'),
           '/tawrid-api/warehouse/medicines/import/j1/apply');
     });

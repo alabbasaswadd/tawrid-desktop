@@ -7,6 +7,7 @@ import 'package:tawrid_app/app/theme/app_spacing.dart';
 import 'package:tawrid_app/app/theme/app_tokens_ext.dart';
 import 'package:tawrid_app/core/network/api_exception.dart';
 import 'package:tawrid_app/core/realtime/inventory_import_hub.dart';
+import 'package:tawrid_app/features/wh_medicines/import_offer_setup_page.dart';
 import 'package:tawrid_app/models/ai_import_models.dart';
 import 'package:tawrid_app/repositories/inventory_import_repository.dart';
 import 'package:tawrid_app/shared/ui/ui.dart';
@@ -33,8 +34,26 @@ class _WhImportInventoryPageState extends ConsumerState<WhImportInventoryPage> {
 
   String _activity = '';
   double _progress = 0;
+  bool _cancelling = false;
+
+  /// خبرٌ لا عطل — يُعرض على شاشة البداية بعد إلغاءٍ ناجح.
+  String? _notice;
+
   int _uploadPercent = 0;
   bool _uploading = false;
+
+  /// المزامنة جارية — مرحلةٌ قائمة بذاتها في الواجهة.
+  ///
+  /// كانت ناقصة، وهذا أصل عطب «المزامنة»: الضغط على الزرّ كان ينادي
+  /// الخادم ويبقى `status` على «جاهزة للمراجعة»، فتظلّ الشاشة على
+  /// المراجعة بلا حراك حتى يصل التقرير — فيبدو الزرّ كأنه لم يعمل،
+  /// ويُضغط ثانيةً.
+  bool _applying = false;
+
+  /// ما تمّت مزامنته حتى الآن — الأحدث أولاً، يصل صنفاً صنفاً.
+  final List<ImportItemEvent> _syncItems = [];
+  int _syncDone = 0;
+  int _syncTotal = 0;
 
   /// تعديلات المستخدم في المراجعة — تُرسل عند التطبيق.
   final Map<String, double?> _priceOverrides = {};
@@ -77,6 +96,18 @@ class _WhImportInventoryPageState extends ConsumerState<WhImportInventoryPage> {
           // حتى لا يختلف الشريط بين مصدرَي التحديث فيتراجع أمام العين.
           _progress = _weighted(event.phase, event.done / event.total);
         }
+      });
+    }));
+
+    // صنفٌ انتهت مزامنته — يُضاف إلى القائمة فور وصوله.
+    _subs.add(hub.item.listen((event) {
+      if (!mounted || event.jobId != _job?.jobId) return;
+      setState(() {
+        // الأحدث أولاً: الجديد يظهر في أعلى القائمة حيث تنظر العين،
+        // بدل أن يُدفن تحت عشرات الأسطر السابقة.
+        _syncItems.insert(0, event);
+        _syncDone = event.done;
+        if (event.total > 0) _syncTotal = event.total;
       });
     }));
 
@@ -147,8 +178,12 @@ class _WhImportInventoryPageState extends ConsumerState<WhImportInventoryPage> {
 
     setState(() {
       _error = null;
+      _notice = null;
       _report = null;
       _rows = const [];
+      _syncItems.clear();
+      _syncDone = 0;
+      _syncTotal = 0;
       _priceOverrides.clear();
       _catalogOverrides.clear();
       _uploading = true;
@@ -190,12 +225,24 @@ class _WhImportInventoryPageState extends ConsumerState<WhImportInventoryPage> {
     }
   }
 
+  /// عدد الصفوف المحلَّلة حين جُلبت قائمة الأصناف آخر مرّة.
+  ///
+  /// الصفوف لا تتغيّر إلا عند اكتمال دفعة وكيل (كل دقيقة أو أكثر)، بينما
+  /// العدّادات تتغيّر مع كل استطلاع. فجلبها مع كل نبضة يعني نقل مئات
+  /// الصفوف كل ثلاث ثوانٍ بلا جديد — وجلبها عند تغيّر العدد وحده يُعطي
+  /// نفس النتيجة بجزءٍ من الحِمل.
+  int _rowsFetchedAt = -1;
+
   void _startPolling() {
     _poll?.cancel();
     _poll = Timer.periodic(const Duration(seconds: 3), (_) {
       final job = _job;
       if (!mounted || job == null || !job.status.isRunning) return;
-      _loadJob(job.jobId, silent: true, includeRows: false);
+
+      final progressed = job.analyzedRows != _rowsFetchedAt;
+      if (progressed) _rowsFetchedAt = job.analyzedRows;
+
+      _loadJob(job.jobId, silent: true, includeRows: progressed);
     });
   }
 
@@ -312,32 +359,41 @@ class _WhImportInventoryPageState extends ConsumerState<WhImportInventoryPage> {
     final price = value.isEmpty ? null : double.tryParse(value);
     if (value.isNotEmpty && price == null) return; // نصّ ليس رقماً — يُهمَل
 
+    // copyWith لا بناءٌ يدوي: الصفّ صار يحمل شركةً وخصماً وبونصاً
+    // وصلاحية، وكلّها كانت تسقط صامتةً عند كل تعديل سعر.
     final next = [..._rows];
-    next[index] = ImportRow(
-      id: row.id,
-      rowNumber: row.rowNumber,
-      rawCells: row.rawCells,
-      name: row.name,
-      strength: row.strength,
-      form: row.form,
-      manufacturer: row.manufacturer,
-      quantity: row.quantity,
-      price: price,
-      confidence: row.confidence,
-      note: row.note,
-      matchStatus: row.matchStatus,
-      selected: true,
-      matched: row.matched,
-      candidates: row.candidates,
-      previousPrice: row.previousPrice,
-      outcome: row.outcome,
-      outcomeMessage: row.outcomeMessage,
-    );
+    next[index] = row.copyWith(price: price, selected: true, clearPrice: price == null);
 
     setState(() {
       _rows = next;
       _priceOverrides[row.id] = price;
     });
+  }
+
+  /// بنود العرض المحدَّدة، مجموعةً بالشركة.
+  ///
+  /// الشركة مفتاح التجميع لأنها وحدة التفاوض في السوق: المستودع يتّفق
+  /// مع شركةٍ على شروطٍ فتسري على أصنافها، لا على صنفٍ صنف.
+  List<ImportOfferGroup> get _offerGroups {
+    final byCompany = <String, List<ImportRow>>{};
+
+    for (final row in _rows) {
+      if (!row.isOfferItem || !row.selected || !row.isActionable) continue;
+      byCompany.putIfAbsent(row.company?.trim() ?? '', () => []).add(row);
+    }
+
+    final groups = byCompany.entries
+        .map((e) => ImportOfferGroup(company: e.key, rows: e.value))
+        .toList();
+
+    // الأكثر بنوداً أولاً، والمجهولة آخراً: هي الأقلّ إفادةً وأقربها
+    // إلى أن تُترك بلا عرض.
+    groups.sort((a, b) {
+      if (a.isUnnamed != b.isUnnamed) return a.isUnnamed ? 1 : -1;
+      return b.rows.length.compareTo(a.rows.length);
+    });
+
+    return groups;
   }
 
   Future<void> _apply() async {
@@ -350,9 +406,31 @@ class _WhImportInventoryPageState extends ConsumerState<WhImportInventoryPage> {
         .toList();
     if (selected.isEmpty) return;
 
+    // ── خطوة العروض ───────────────────────────────────────────────────
+    // تظهر متى حمل المحدَّد شرطاً تجارياً، وتُتخطّى لملف الجرد الصرف:
+    // لا معنى لسؤال عن مناطقَ ومُددٍ لملفٍ لا عرض فيه.
+    var offers = const <ImportOfferPlan>[];
+    final groups = _offerGroups;
+
+    if (groups.isNotEmpty) {
+      final chosen = await Navigator.of(context).push<List<ImportOfferPlan>>(
+        MaterialPageRoute(
+          builder: (_) => ImportOfferSetupPage(groups: groups),
+        ),
+      );
+
+      // العودة بلا نتيجة (زرّ الرجوع) إلغاءٌ للمزامنة كلها لا مضيٌّ
+      // بلا عروض: المستخدم تراجع، ولم يقل «زامن المخزون وحده».
+      if (chosen == null || !mounted) return;
+      offers = chosen;
+    }
+
     setState(() {
+      _applying = true;
+      _syncItems.clear();
+      _syncDone = 0;
+      _syncTotal = selected.length;
       _activity = 'يزامن مع مخزونك…';
-      _progress = 1;
       _error = null;
     });
 
@@ -363,12 +441,87 @@ class _WhImportInventoryPageState extends ConsumerState<WhImportInventoryPage> {
                 selectedRowIds: selected,
                 priceOverrides: _priceOverrides,
                 catalogOverrides: _catalogOverrides,
+                offers: offers,
               );
       if (!mounted) return;
-      setState(() => _report = report);
+      setState(() {
+        _applying = false;
+        _report = report;
+      });
     } on ApiException catch (e) {
       if (!mounted) return;
-      setState(() => _error = e.message);
+      // يعود إلى المراجعة لا إلى شاشةٍ فارغة: تحديداته وتعديلاته ما زالت
+      // في يده، فيُصلح ما يلزم ويُعيد المحاولة بلا أن يرفع الملف ثانيةً.
+      setState(() {
+        _applying = false;
+        _error = e.message;
+      });
+    }
+  }
+
+  /// يوقف المهمة الجارية بعد تأكيد.
+  ///
+  /// التأكيد ليس تزيّناً: الملف رُفع والتحليل قطع شوطاً، وإلغاؤه بنقرةٍ
+  /// واحدة يُضيّع عملاً استغرق دقائق — لكنّ الإلغاء نفسه آمن، فلا شيء
+  /// كُتب في «أدويتي» بعد.
+  Future<void> _cancel() async {
+    final job = _job;
+    if (job == null) return;
+
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: ctx.colors.surface,
+        title: Text('إلغاء الاستيراد؟', style: ctx.text.titleMedium),
+        content: Text(
+          'سيتوقّف التحليل ولن يُضاف شيء إلى مخزونك. يمكنك رفع الملف '
+          'من جديد في أي وقت.',
+          style: ctx.text.bodySmall,
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(false),
+            child: const Text('متابعة التحليل'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(true),
+            child: Text(
+              'إلغاء الاستيراد',
+              style: TextStyle(color: ctx.tokens.danger),
+            ),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+
+    // الاستطلاع يتوقّف قبل النداء: استجابةٌ متأخّرة قد تُعيد الحالة
+    // «جارية» بعد الإلغاء فتعود الشاشة إلى التحليل أمام المستخدم.
+    _poll?.cancel();
+    setState(() {
+      _cancelling = true;
+      _activity = 'يوقف الاستيراد…';
+    });
+
+    try {
+      await ref.read(inventoryImportRepositoryProvider).cancel(job.jobId);
+      if (!mounted) return;
+      setState(() {
+        _cancelling = false;
+        _job = null;
+        _rows = const [];
+        _progress = 0;
+        _activity = '';
+        _notice = 'أُلغي الاستيراد — لم يُضَف شيء إلى مخزونك';
+      });
+    } on ApiException catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _cancelling = false;
+        _error = e.message;
+      });
+      // فشل الإلغاء يعني أنها ما زالت تعمل — فيعود الاستطلاع.
+      _startPolling();
     }
   }
 
@@ -378,7 +531,12 @@ class _WhImportInventoryPageState extends ConsumerState<WhImportInventoryPage> {
       _job = null;
       _report = null;
       _error = null;
+      _notice = null;
       _rows = const [];
+      _applying = false;
+      _syncItems.clear();
+      _syncDone = 0;
+      _syncTotal = 0;
       _progress = 0;
       _activity = '';
       _priceOverrides.clear();
@@ -398,6 +556,12 @@ class _WhImportInventoryPageState extends ConsumerState<WhImportInventoryPage> {
         onDone: () => Navigator.of(context).maybePop(),
         onAgain: _reset,
       );
+    } else if (_applying) {
+      body = _SyncingView(
+        items: _syncItems,
+        done: _syncDone,
+        total: _syncTotal,
+      );
     } else if (_uploading) {
       body = _WorkingView(
         phase: ImportStatus.pending,
@@ -411,6 +575,23 @@ class _WhImportInventoryPageState extends ConsumerState<WhImportInventoryPage> {
         activity: _activity.isEmpty ? (job.activity ?? '') : _activity,
         progress: _progress,
         fileName: job.fileName,
+        totalRows: job.totalRows,
+        // المرحلة التي لم يُنجَز فيها صفٌّ بعد لا قياس لتقدّمها.
+        measured: switch (job.status) {
+          ImportStatus.analyzing => job.analyzedRows > 0,
+          ImportStatus.matching => job.matchedRows > 0,
+          _ => false,
+        },
+        startedAt: job.createdOn,
+        onLeave: () => Navigator.of(context).maybePop(),
+        // لا إلغاء أثناء المزامنة: الكتابة في «أدويتي» جارية، وقطعُها
+        // يترك نصف الأصناف مُضافاً ونصفها لا.
+        onCancel: job.status == ImportStatus.applying ? null : _cancel,
+        cancelling: _cancelling,
+        // ما تعرّف عليه الوكيل حتى الآن. الصفوف غير المحلَّلة تصل باسمٍ
+        // فارغ (يُملأ عند تطبيعها)، فتُطرح حتى لا تظهر أسطرٌ خاوية.
+        discovered: _rows.where((r) => r.name.isNotEmpty).toList(),
+        analyzedRows: job.analyzedRows,
       );
     } else if (job != null && job.status == ImportStatus.ready) {
       body = _ReviewView(
@@ -425,7 +606,7 @@ class _WhImportInventoryPageState extends ConsumerState<WhImportInventoryPage> {
         onRestart: _reset,
       );
     } else {
-      body = _IdleView(onPick: _pick, error: _error);
+      body = _IdleView(onPick: _pick, error: _error, notice: _notice);
     }
 
     return Scaffold(
@@ -453,6 +634,7 @@ class _WhImportInventoryPageState extends ConsumerState<WhImportInventoryPage> {
   /// وإلا أُعيد بناء الشاشة بتلاشٍ كامل ثلاث مرات في الثانية.
   String get _stageKey {
     if (_report != null) return 'report';
+    if (_applying) return 'syncing';
     if (_uploading) return 'upload';
     final status = _job?.status;
     if (status == null) return 'idle';
@@ -464,10 +646,14 @@ class _WhImportInventoryPageState extends ConsumerState<WhImportInventoryPage> {
 
 // ── الحالة الأولى ────────────────────────────────────────────────────────
 class _IdleView extends StatelessWidget {
-  const _IdleView({required this.onPick, this.error});
+  const _IdleView({required this.onPick, this.error, this.notice});
 
   final VoidCallback onPick;
   final String? error;
+
+  /// خبرٌ لا عطل (إلغاءٌ تمّ مثلاً) — بنبرةٍ محايدة لا حمراء: ما فعله
+  /// المستخدم بنفسه لا يُعرض عليه كخطأ.
+  final String? notice;
 
   @override
   Widget build(BuildContext context) {
@@ -506,6 +692,14 @@ class _IdleView extends StatelessWidget {
                   tone: StatusTone.danger,
                   title: 'تعذّر الاستيراد',
                   body: error!,
+                ),
+                const SizedBox(height: AppSpacing.lg),
+              ] else if (notice != null) ...[
+                _NoticeCard(
+                  appIcon: AppIcons.info,
+                  tone: StatusTone.info,
+                  title: 'أُلغي الاستيراد',
+                  body: notice!,
                 ),
                 const SizedBox(height: AppSpacing.lg),
               ],
@@ -631,6 +825,14 @@ class _WorkingView extends StatelessWidget {
     required this.activity,
     required this.progress,
     required this.fileName,
+    this.totalRows = 0,
+    this.measured = true,
+    this.startedAt,
+    this.onLeave,
+    this.discovered = const [],
+    this.analyzedRows = 0,
+    this.onCancel,
+    this.cancelling = false,
   });
 
   final ImportStatus phase;
@@ -638,11 +840,35 @@ class _WorkingView extends StatelessWidget {
   final double progress;
   final String? fileName;
 
+  /// عدد صفوف الملف — يُعرض ليعرف المستخدم أن الانتظار يناسب حجمه.
+  final int totalRows;
+
+  /// هل للتقدّم المعروض قياسٌ حقيقي؟ المرحلة التي لم يُنجَز فيها صفٌّ بعد
+  /// لا قياس لها، وحلقةٌ واقفة على رقمٍ ثابت دقائق تبدو تجمّداً لا انتظاراً.
+  final bool measured;
+
+  final DateTime? startedAt;
+  final VoidCallback? onLeave;
+
+  /// الأصناف التي تعرّف عليها الوكيل حتى الآن — تُعرض أولاً بأول.
+  final List<ImportRow> discovered;
+
+  final int analyzedRows;
+
+  /// يوقف المهمة في الخادم. فارغاً يعني أن هذه المرحلة لا تُلغى.
+  final VoidCallback? onCancel;
+
+  final bool cancelling;
+
   @override
   Widget build(BuildContext context) {
     final tk = context.tokens;
 
-    return Padding(
+    // الانتظار بلا قائمة ينتظر، ومع قائمةٍ تنمو يُراقَب: المستخدم يرى
+    // أدويته تظهر واحداً واحداً فيطمئنّ أن الوكيل يقرأ ملفه هو.
+    final preview = discovered.reversed.take(6).toList();
+
+    return SingleChildScrollView(
       padding: const EdgeInsets.fromLTRB(
           AppSpacing.page, AppSpacing.x2l, AppSpacing.page, AppSpacing.x3l),
       child: Center(
@@ -651,7 +877,7 @@ class _WorkingView extends StatelessWidget {
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              _ProgressRing(progress: progress),
+              _ProgressRing(progress: progress, measured: measured),
               const SizedBox(height: AppSpacing.x2l),
 
               // نصّ ما يجري يتبدّل بتلاشٍ لا بقفزة — القفز بين جملتين
@@ -681,10 +907,62 @@ class _WorkingView extends StatelessWidget {
               _PhaseStepper(current: phase),
               const SizedBox(height: AppSpacing.x2l),
 
+              // عدّاد الزمن والمتبقّي: انتظارٌ طويل مع رقمٍ يتحرّك انتظار،
+              // وبلا رقمٍ يتحرّك يبدو عُطلاً — والمستخدم حينها يعيد الرفع
+              // فتتراكم مهام متوازية على الخادم بلا داعٍ.
+              if (startedAt != null)
+                _ElapsedLine(
+                  startedAt: startedAt!,
+                  done: analyzedRows,
+                  total: totalRows,
+                ),
+
+              if (totalRows > 0) ...[
+                const SizedBox(height: AppSpacing.xs),
+                Text(
+                  '$totalRows صفاً في الملف',
+                  style: context.text.labelSmall?.copyWith(color: tk.hint),
+                  textAlign: TextAlign.center,
+                ),
+              ],
+
+              // ما تعرّف عليه الوكيل — يظهر أولاً بأول لا بعد الانتهاء.
+              if (preview.isNotEmpty) ...[
+                const SizedBox(height: AppSpacing.xl),
+                _DiscoveredList(rows: preview, total: discovered.length),
+              ],
+
+              const SizedBox(height: AppSpacing.lg),
               Text(
                 'يمكنك إغلاق الشاشة — العمل يتابع في الخادم وتجده عند عودتك',
                 style: context.text.labelSmall?.copyWith(color: tk.hint),
                 textAlign: TextAlign.center,
+              ),
+
+              const SizedBox(height: AppSpacing.md),
+              Row(
+                children: [
+                  if (onLeave != null)
+                    Expanded(
+                      child: AppButton(
+                        label: 'متابعة لاحقاً',
+                        variant: AppButtonVariant.text,
+                        onPressed: cancelling ? null : onLeave,
+                      ),
+                    ),
+                  if (onCancel != null) ...[
+                    if (onLeave != null) const SizedBox(width: AppSpacing.sm),
+                    Expanded(
+                      child: AppButton(
+                        label: 'إلغاء الاستيراد',
+                        variant: AppButtonVariant.danger,
+                        appIcon: AppIcons.x,
+                        loading: cancelling,
+                        onPressed: onCancel,
+                      ),
+                    ),
+                  ],
+                ],
               ),
             ],
           ),
@@ -694,10 +972,218 @@ class _WorkingView extends StatelessWidget {
   }
 }
 
+/// «مضى ٥:٢٣ · يتبقّى ~١٢ دقيقة» — يتجدّد كل ثانية.
+class _ElapsedLine extends StatefulWidget {
+  const _ElapsedLine({
+    required this.startedAt,
+    this.done = 0,
+    this.total = 0,
+  });
+
+  final DateTime startedAt;
+  final int done;
+  final int total;
+
+  @override
+  State<_ElapsedLine> createState() => _ElapsedLineState();
+}
+
+class _ElapsedLineState extends State<_ElapsedLine> {
+  Timer? _tick;
+
+  /// أول لحظة رُصد فيها تقدّمٌ فعلي، وعدد الصفوف عندها — نقطة الأساس التي
+  /// يُقاس منها المعدّل بدل لحظة إنشاء المهمة.
+  DateTime? _firstSeenAt;
+  int _firstSeenDone = 0;
+
+  @override
+  void initState() {
+    super.initState();
+    _noteProgress();
+    _tick = Timer.periodic(const Duration(seconds: 1), (_) {
+      if (mounted) setState(() {});
+    });
+  }
+
+  @override
+  void didUpdateWidget(covariant _ElapsedLine oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    _noteProgress();
+  }
+
+  void _noteProgress() {
+    if (_firstSeenAt == null && widget.done > 0) {
+      _firstSeenAt = DateTime.now();
+      _firstSeenDone = widget.done;
+    }
+  }
+
+  @override
+  void dispose() {
+    _tick?.cancel();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final d = DateTime.now().difference(widget.startedAt);
+    final minutes = d.inMinutes;
+    final seconds = (d.inSeconds % 60).toString().padLeft(2, '0');
+
+    final remaining = _remaining();
+
+    return Column(
+      children: [
+        Text(
+          'مضى $minutes:$seconds',
+          style: context.text.labelMedium?.copyWith(color: context.tokens.hint),
+          textAlign: TextAlign.center,
+        ),
+        if (remaining != null) ...[
+          const SizedBox(height: 2),
+          Text(
+            'يتبقّى ${_humanize(remaining)} تقريباً',
+            style: context.text.labelMedium
+                ?.copyWith(color: context.colors.primary),
+            textAlign: TextAlign.center,
+          ),
+        ],
+      ],
+    );
+  }
+
+  /// تقدير المتبقّي من المعدّل المُقاس بين آخر تقدّمين.
+  ///
+  /// القياس من لحظة الإنشاء يكذب: يشمل انتظار المهمة في الطابور وإقلاع
+  /// الوكيل البارد، فيُحمَّل المعدّلُ زمناً لا يتكرّر — ملفٌ أنجز دفعته
+  /// الأولى في نصف ساعة أكثرها انتظار، فيُقدَّر الباقي بساعات وهو دقائق.
+  ///
+  /// فيُقاس المعدّل من الصفوف التي أُنجزت **منذ أول تقدّم رُصد** لا منذ
+  /// الإنشاء، ولا يُعرَض قبل تقدّمين: تقديرٌ من نقطةٍ واحدة بلا معنى.
+  Duration? _remaining() {
+    final from = _firstSeenAt;
+    final base = _firstSeenDone;
+    if (from == null) return null;
+
+    final advanced = widget.done - base;
+    final left = widget.total - widget.done;
+    if (advanced < 10 || left <= 0) return null;
+
+    final seconds = DateTime.now().difference(from).inSeconds;
+    if (seconds < 10) return null;
+
+    final perRow = seconds / advanced;
+    return Duration(seconds: (left * perRow).round());
+  }
+
+  static String _humanize(Duration d) {
+    if (d.inMinutes < 1) return 'أقل من دقيقة';
+    if (d.inMinutes < 60) return '${d.inMinutes} دقيقة';
+
+    final hours = d.inHours;
+    final minutes = d.inMinutes % 60;
+    return minutes == 0 ? '$hours ساعة' : '$hours ساعة و$minutes دقيقة';
+  }
+}
+
+/// قائمة الأصناف التي تعرّف عليها الوكيل — الأحدث أولاً.
+class _DiscoveredList extends StatelessWidget {
+  const _DiscoveredList({required this.rows, required this.total});
+
+  final List<ImportRow> rows;
+
+  /// العدد الكلي المكتشَف (القائمة تعرض آخر بضعة منه فقط).
+  final int total;
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = context.colors;
+    final tk = context.tokens;
+
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.symmetric(
+          horizontal: AppSpacing.md, vertical: AppSpacing.md),
+      decoration: BoxDecoration(
+        color: tk.surfaceAlt,
+        borderRadius: BorderRadius.circular(AppRadius.lg),
+        border: Border.all(color: cs.outlineVariant),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              AppIcon(AppIcons.pill, size: 14, color: cs.primary),
+              const SizedBox(width: AppSpacing.sm),
+              Expanded(
+                child: Text(
+                  'تعرّف على $total صنفاً',
+                  style: context.text.labelMedium?.copyWith(color: cs.primary),
+                ),
+              ),
+              DotsLoader(color: cs.primary, size: 4),
+            ],
+          ),
+          const SizedBox(height: AppSpacing.sm),
+
+          // AnimatedSwitcher على المفتاح لا على العناصر: القائمة تتبدّل
+          // دفعةً عند اكتمال دفعة الوكيل، فيكفي تلاشٍ واحد لها كلها.
+          AnimatedSwitcher(
+            duration: const Duration(milliseconds: 400),
+            child: Column(
+              key: ValueKey(rows.isEmpty ? '' : rows.first.id),
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                for (final row in rows)
+                  Padding(
+                    padding: const EdgeInsets.only(bottom: 3),
+                    child: Row(
+                      children: [
+                        AppIcon(AppIcons.check, size: 11, color: tk.success),
+                        const SizedBox(width: AppSpacing.sm),
+                        Expanded(
+                          child: Text(
+                            row.name,
+                            style: context.text.labelSmall,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        ),
+                        if (row.strength != null) ...[
+                          const SizedBox(width: AppSpacing.xs),
+                          Text(
+                            _num(row.strength!),
+                            style: context.text.labelSmall
+                                ?.copyWith(color: tk.hint),
+                          ),
+                        ],
+                        if (row.price != null) ...[
+                          const SizedBox(width: AppSpacing.sm),
+                          Text(
+                            _num(row.price!),
+                            style: context.text.labelSmall
+                                ?.copyWith(color: cs.primary),
+                          ),
+                        ],
+                      ],
+                    ),
+                  ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
 /// حلقة تقدّم تتحرّك بسلاسة بين القيم بدل أن تقفز عند كل إطار.
 class _ProgressRing extends StatelessWidget {
-  const _ProgressRing({required this.progress});
+  const _ProgressRing({required this.progress, this.measured = true});
+
   final double progress;
+  final bool measured;
 
   @override
   Widget build(BuildContext context) {
@@ -718,9 +1204,10 @@ class _ProgressRing extends StatelessWidget {
               width: 120,
               height: 120,
               child: CircularProgressIndicator(
-                // صفراً تدور بلا قيمة: العمل بدأ ولا نسبة له بعد، وشريطٌ
-                // واقفٌ على الصفر يبدو تجمّداً.
-                value: value <= 0.01 ? null : value,
+                // تدور بلا قيمة ما لم يكن للتقدّم قياسٌ حقيقي: مرحلةٌ لم
+                // يُنجَز فيها صفٌّ بعد تبقى على رقمها دقائق — وحلقةٌ واقفة
+                // على ٥٪ تبدو تجمّداً، بينما الدوران يقول «يعمل ولا يُقاس».
+                value: !measured || value <= 0.01 ? null : value,
                 strokeWidth: 6,
                 strokeCap: StrokeCap.round,
                 valueColor: AlwaysStoppedAnimation<Color>(cs.primary),
@@ -730,12 +1217,15 @@ class _ProgressRing extends StatelessWidget {
             Column(
               mainAxisSize: MainAxisSize.min,
               children: [
-                Text('${(value * 100).round()}٪',
-                    style: context.text.titleLarge?.copyWith(
-                      color: cs.primary,
-                      fontWeight: FontWeight.w700,
-                    )),
-                const SizedBox(height: 2),
+                // النسبة لا تُعرض بلا قياس: رقمٌ ثابت لا يتحرّك أسوأ من
+                // لا رقم، لأنه يدّعي دقّةً ليست عنده.
+                if (measured)
+                  Text('${(value * 100).round()}٪',
+                      style: context.text.titleLarge?.copyWith(
+                        color: cs.primary,
+                        fontWeight: FontWeight.w700,
+                      )),
+                if (measured) const SizedBox(height: 2),
                 DotsLoader(color: cs.primary, size: 5),
               ],
             ),
@@ -902,8 +1392,245 @@ class _PulseState extends State<_Pulse> with SingleTickerProviderStateMixin {
       );
 }
 
+// ── المزامنة الجارية ─────────────────────────────────────────────────────
+/// ما يجري أثناء الكتابة في «أدويتي» — صنفاً صنفاً وقت حدوثه.
+///
+/// الفرق بين هذه الشاشة وغيابها هو الفرق بين «يعمل» و«تعلّق»: المزامنة
+/// تمرّ على مئات الأصناف، وبلا عرضٍ لكل واحدٍ منها يبقى المستخدم أمام
+/// شاشةٍ ساكنة ثم يُفاجأ بالتقرير — ولا يعرف أين تعثّرت إن تعثّرت.
+class _SyncingView extends StatelessWidget {
+  const _SyncingView({
+    required this.items,
+    required this.done,
+    required this.total,
+  });
+
+  final List<ImportItemEvent> items;
+  final int done;
+  final int total;
+
+  @override
+  Widget build(BuildContext context) {
+    final tk = context.tokens;
+    final fraction = total > 0 ? (done / total).clamp(0.0, 1.0) : 0.0;
+
+    final added = items.where((i) => i.outcome == ImportOutcome.added).length;
+    final repriced =
+        items.where((i) => i.outcome == ImportOutcome.repriced).length;
+    final failed = items.where((i) => i.outcome == ImportOutcome.failed).length;
+
+    return Column(
+      children: [
+        Padding(
+          padding: const EdgeInsets.fromLTRB(
+              AppSpacing.page, AppSpacing.xl, AppSpacing.page, AppSpacing.md),
+          child: Column(
+            children: [
+              _ProgressRing(
+                progress: fraction,
+                // القياس يبدأ عند أول صنفٍ يصل: نسبةٌ صفرية مرسومة قبل
+                // أي خبر توحي بتوقّفٍ لم يحدث.
+                measured: done > 0,
+              ),
+              const SizedBox(height: AppSpacing.lg),
+              Text('يزامن مع مخزونك…', style: context.text.titleMedium),
+              const SizedBox(height: AppSpacing.xs),
+              Text(
+                total > 0
+                    ? 'أنجز $done من $total صنفاً — لا تُغلق الشاشة'
+                    : 'لا تُغلق الشاشة حتى تنتهي المزامنة',
+                style: context.text.bodySmall?.copyWith(color: tk.hint),
+                textAlign: TextAlign.center,
+              ),
+              const SizedBox(height: AppSpacing.lg),
+              Wrap(
+                spacing: AppSpacing.sm,
+                runSpacing: AppSpacing.xs,
+                alignment: WrapAlignment.center,
+                children: [
+                  if (added > 0)
+                    StatusBadge(
+                        label: 'أُضيف $added', tone: StatusTone.success),
+                  if (repriced > 0)
+                    StatusBadge(
+                        label: 'حُدِّث سعر $repriced', tone: StatusTone.info),
+                  if (failed > 0)
+                    StatusBadge(
+                        label: 'تعذّر $failed', tone: StatusTone.danger),
+                ],
+              ),
+            ],
+          ),
+        ),
+        const Divider(height: 1),
+        Expanded(
+          child: items.isEmpty
+              ? Center(
+                  child: Text(
+                    'يبدأ بعد لحظة…',
+                    style: context.text.bodySmall?.copyWith(color: tk.hint),
+                  ),
+                )
+              : ListView.builder(
+                  padding: const EdgeInsets.fromLTRB(AppSpacing.page,
+                      AppSpacing.md, AppSpacing.page, AppSpacing.lg),
+                  itemCount: items.length,
+                  itemBuilder: (_, i) => Padding(
+                    padding: const EdgeInsets.only(bottom: AppSpacing.sm),
+                    child: _SyncItemTile(item: items[i]),
+                  ),
+                ),
+        ),
+      ],
+    );
+  }
+}
+
+/// سطرٌ واحد في قائمة المزامنة الحيّة.
+class _SyncItemTile extends StatelessWidget {
+  const _SyncItemTile({required this.item});
+  final ImportItemEvent item;
+
+  @override
+  Widget build(BuildContext context) {
+    final tk = context.tokens;
+
+    final (icon, fg, bg, label) = switch (item.outcome) {
+      ImportOutcome.added => (
+          AppIcons.plus,
+          tk.success,
+          tk.successSurface,
+          'أُضيف'
+        ),
+      ImportOutcome.repriced => (
+          AppIcons.tag,
+          context.colors.primary,
+          tk.brandSurface,
+          'حُدِّث السعر'
+        ),
+      ImportOutcome.failed => (
+          AppIcons.alertTriangle,
+          tk.danger,
+          tk.dangerSurface,
+          'تعذّر'
+        ),
+      _ => (AppIcons.x, tk.hint, context.colors.surface, 'تُخطّي'),
+    };
+
+    // ظهورٌ من أسفل مع تلاشٍ — الوصول يُرى لا يُفاجئ.
+    return TweenAnimationBuilder<double>(
+      key: ValueKey(item.rowNumber),
+      tween: Tween<double>(begin: 0, end: 1),
+      duration: const Duration(milliseconds: 280),
+      curve: Curves.easeOut,
+      builder: (_, t, child) => Opacity(
+        opacity: t,
+        child: Transform.translate(offset: Offset(0, 10 * (1 - t)), child: child),
+      ),
+      child: Container(
+        padding: const EdgeInsets.all(AppSpacing.md),
+        decoration: BoxDecoration(
+          color: bg,
+          borderRadius: BorderRadius.circular(AppRadius.md),
+          border: Border.all(color: fg.withValues(alpha: 0.18)),
+        ),
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            AppIcon(icon, size: 18, color: fg),
+            const SizedBox(width: AppSpacing.sm),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(item.name,
+                      style: context.text.labelLarge,
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis),
+                  const SizedBox(height: 2),
+                  Row(
+                    children: [
+                      Text(label,
+                          style: context.text.labelSmall?.copyWith(color: fg)),
+                      if (item.price != null) ...[
+                        Text(' · ',
+                            style: context.text.labelSmall
+                                ?.copyWith(color: tk.hint)),
+                        // السعر القديم مشطوبٌ بجانب الجديد: التغيير
+                        // يُفهَم من نظرة بلا أن يتذكّر المستخدم ما كان.
+                        if (item.previousPrice != null)
+                          Text(
+                            '${_n(item.previousPrice!)} ← ',
+                            style: context.text.labelSmall?.copyWith(
+                              color: tk.hint,
+                              decoration: TextDecoration.lineThrough,
+                            ),
+                          ),
+                        Text(_n(item.price!), style: context.priceStyle),
+                      ],
+                    ],
+                  ),
+                  if (item.message != null) ...[
+                    const SizedBox(height: 2),
+                    Text(item.message!,
+                        style:
+                            context.text.bodySmall?.copyWith(color: tk.danger)),
+                  ],
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  static String _n(double v) =>
+      v == v.roundToDouble() ? v.toStringAsFixed(0) : v.toString();
+}
+
 // ── المراجعة ─────────────────────────────────────────────────────────────
-class _ReviewView extends StatelessWidget {
+/// تصنيف صفوف المراجعة — قسمةٌ تامّة لا تتداخل.
+///
+/// كل صفٍّ يقع في خانةٍ واحدة لا غير، وإلا صار المجموع أكبر من العدد
+/// وفقد المستخدم ثقته في الأرقام: «جديد» هو المطابَق الحاسم غير المملوك،
+/// والمملوك «تحديث سعر»، والمشكوك فيه «يلزم تأكيد»، وما لا أصل له في
+/// الكتالوج «غير موجود».
+enum _RowFilter {
+  all('الكل'),
+  offers('بنود عرض'),
+  newItem('جديد'),
+  priceUpdate('تحديث سعر'),
+  needsConfirm('يلزم تأكيد'),
+  notFound('غير موجود');
+
+  const _RowFilter(this.label);
+  final String label;
+
+  bool matches(ImportRow row) => switch (this) {
+        _RowFilter.all => true,
+
+        // «بنود عرض» تقطع التصنيف الآخر لا تُجاوره: الصفّ بخصمٍ قد يكون
+        // جديداً أو تحديثَ سعر في آن. ولذلك لا تُحسَب في قسمة الأربعة،
+        // وتُعرَض وحدها مجموعةً بالشركة.
+        _RowFilter.offers => row.isOfferItem,
+        _RowFilter.newItem => row.matchStatus == ImportMatch.matched,
+        _RowFilter.priceUpdate => row.matchStatus == ImportMatch.owned,
+        _RowFilter.needsConfirm => row.matchStatus == ImportMatch.ambiguous,
+        _RowFilter.notFound => row.matchStatus == ImportMatch.notFound,
+      };
+
+  StatusTone get tone => switch (this) {
+        _RowFilter.all => StatusTone.neutral,
+        _RowFilter.offers => StatusTone.brand,
+        _RowFilter.newItem => StatusTone.success,
+        _RowFilter.priceUpdate => StatusTone.info,
+        _RowFilter.needsConfirm => StatusTone.warning,
+        _RowFilter.notFound => StatusTone.danger,
+      };
+}
+
+class _ReviewView extends StatefulWidget {
   const _ReviewView({
     required this.job,
     required this.rows,
@@ -927,18 +1654,39 @@ class _ReviewView extends StatelessWidget {
   final VoidCallback onRestart;
 
   @override
+  State<_ReviewView> createState() => _ReviewViewState();
+}
+
+class _ReviewViewState extends State<_ReviewView> {
+  _RowFilter _filter = _RowFilter.all;
+
+  @override
   Widget build(BuildContext context) {
     final tk = context.tokens;
+    final rows = widget.rows;
 
     final selected = rows.where((r) => r.selected && r.isActionable).toList();
-    final newCount =
-        selected.where((r) => r.matchStatus != ImportMatch.owned).length;
-    final updateCount =
-        selected.where((r) => r.matchStatus == ImportMatch.owned).length;
-    final needsConfirm =
-        rows.where((r) => r.matchStatus == ImportMatch.ambiguous).length;
-    final notFound =
-        rows.where((r) => r.matchStatus == ImportMatch.notFound).length;
+
+    // عدّاد لكل خانة — من كل الصفوف لا من المحدَّد وحده: هذه إجابة
+    // «ماذا في الملف»، وشريط الأسفل يُجيب «ماذا ستُزامن».
+    final counts = {
+      for (final f in _RowFilter.values)
+        f: f == _RowFilter.all
+            ? rows.length
+            : rows.where(f.matches).length,
+    };
+
+    // ترتيب العرض حين تُفلتَر بنود العرض: مجموعةً بالشركة، والأكثر
+    // بنوداً أولاً — فيرى المستخدم العرض الذي سيُنشأ كما سيُنشأ.
+    final grouped = _filter == _RowFilter.offers;
+
+    // الصفوف المعروضة مع فهارسها الأصلية: الفلترة تُغيّر ترتيب العرض،
+    // والنداءات تُشير إلى مواضع في القائمة الكاملة — فلو مُرِّر فهرس
+    // العرض لبدَّل المستخدمُ صفّاً غير الذي نقره.
+    final visible = <int>[
+      for (var i = 0; i < rows.length; i++)
+        if (_filter.matches(rows[i])) i,
+    ];
 
     return Column(
       children: [
@@ -947,73 +1695,42 @@ class _ReviewView extends StatelessWidget {
             padding: const EdgeInsets.fromLTRB(
                 AppSpacing.page, AppSpacing.lg, AppSpacing.page, AppSpacing.lg),
             children: [
-              _SummaryCard(summary: job.summary),
+              _SummaryCard(summary: widget.job.summary, usage: widget.job.usage),
 
-              if (error != null) ...[
+              if (widget.error != null) ...[
                 const SizedBox(height: AppSpacing.md),
                 _NoticeCard(
                   appIcon: AppIcons.alertTriangle,
                   tone: StatusTone.danger,
                   title: 'تعذّرت المزامنة',
-                  body: error!,
+                  body: widget.error!,
                 ),
               ],
 
               const SizedBox(height: AppSpacing.lg),
 
-              Row(
-                children: [
-                  Expanded(
-                    child: _CountTile(
-                      value: newCount,
-                      label: 'جديد',
-                      icon: AppIcons.plus,
-                      tone: StatusTone.success,
-                    ),
-                  ),
-                  const SizedBox(width: AppSpacing.sm),
-                  Expanded(
-                    child: _CountTile(
-                      value: updateCount,
-                      label: 'تحديث سعر',
-                      icon: AppIcons.tag,
-                      tone: StatusTone.info,
-                    ),
-                  ),
-                ],
-              ),
-              if (needsConfirm > 0 || notFound > 0) ...[
-                const SizedBox(height: AppSpacing.sm),
-                Row(
-                  children: [
-                    Expanded(
-                      child: _CountTile(
-                        value: needsConfirm,
-                        label: 'يلزم تأكيد',
-                        icon: AppIcons.alertTriangle,
-                        tone: StatusTone.warning,
-                      ),
-                    ),
-                    const SizedBox(width: AppSpacing.sm),
-                    Expanded(
-                      child: _CountTile(
-                        value: notFound,
-                        label: 'غير موجود',
-                        icon: AppIcons.x,
-                        tone: StatusTone.danger,
-                      ),
-                    ),
-                  ],
+              // لوحة الحصيلة: كل بطاقةٍ عدّادٌ وفلترٌ في آن.
+              //
+              // الدمج مقصود — العدّاد يُثير السؤال («غير موجود: ١٢؟»)
+              // والنقر يُجيبه في مكانه، بدل رقمٍ يُعرَض ثم يُترك المستخدم
+              // يبحث عن أصحابه في قائمةٍ بمئات الأسطر.
+              _FilterBoard(
+                counts: counts,
+                active: _filter,
+                onPick: (f) => setState(
+                  () => _filter = _filter == f ? _RowFilter.all : f,
                 ),
-              ],
+              ),
 
               const SizedBox(height: AppSpacing.lg),
 
               AppSectionHeader(
-                title: 'الأصناف (${rows.length})',
+                title: _filter == _RowFilter.all
+                    ? 'الأصناف (${rows.length})'
+                    : '${_filter.label} (${visible.length})',
                 appIcon: AppIcons.pill,
                 trailing: GestureDetector(
-                  onTap: onToggleAll,
+                  onTap: widget.onToggleAll,
                   child: Text('تحديد الكل',
                       style: context.text.labelMedium
                           ?.copyWith(color: context.colors.primary)),
@@ -1027,17 +1744,45 @@ class _ReviewView extends StatelessWidget {
                   description: 'لم يتعرّف الوكيل على أي صنف في هذا الملف',
                   appIcon: AppIcons.pill,
                 )
-              else
-                for (var i = 0; i < rows.length; i++)
-                  Padding(
-                    padding: const EdgeInsets.only(bottom: AppSpacing.sm),
-                    child: _Appear(
-                      index: i,
+              else if (visible.isEmpty)
+                UiEmpty(
+                  message: 'لا صنف في «${_filter.label}»',
+                  description: 'جرّب تصنيفاً آخر أو اعرض الكل',
+                  appIcon: AppIcons.pill,
+                )
+              else if (grouped)
+                for (final group in _groupByCompany(rows, visible)) ...[
+                  _CompanyHeader(
+                    company: group.key,
+                    count: group.value.length,
+                  ),
+                  for (final i in group.value)
+                    Padding(
+                      key: ValueKey(rows[i].id),
+                      padding: const EdgeInsets.only(bottom: AppSpacing.sm),
                       child: _MatchRow(
                         row: rows[i],
-                        onToggle: () => onToggle(i),
-                        onPickCandidate: () => onPickCandidate(i),
-                        onEditPrice: () => onEditPrice(i),
+                        onToggle: () => widget.onToggle(i),
+                        onPickCandidate: () => widget.onPickCandidate(i),
+                        onEditPrice: () => widget.onEditPrice(i),
+                      ),
+                    ),
+                ]
+              else
+                for (final i in visible)
+                  Padding(
+                    key: ValueKey(rows[i].id),
+                    padding: const EdgeInsets.only(bottom: AppSpacing.sm),
+                    child: _Appear(
+                      // ترتيب الظهور من موضع الصفّ في المعروض لا في
+                      // القائمة الكاملة، وإلا تأخّر أولُ سطرٍ بعد الفلترة
+                      // بمقدار فهرسه الأصلي فبدا وكأن شيئاً لا يحدث.
+                      index: visible.indexOf(i),
+                      child: _MatchRow(
+                        row: rows[i],
+                        onToggle: () => widget.onToggle(i),
+                        onPickCandidate: () => widget.onPickCandidate(i),
+                        onEditPrice: () => widget.onEditPrice(i),
                       ),
                     ),
                   ),
@@ -1062,7 +1807,7 @@ class _ReviewView extends StatelessWidget {
                   child: AppButton(
                     label: 'ملف آخر',
                     variant: AppButtonVariant.outline,
-                    onPressed: onRestart,
+                    onPressed: widget.onRestart,
                   ),
                 ),
                 const SizedBox(width: AppSpacing.md),
@@ -1073,7 +1818,7 @@ class _ReviewView extends StatelessWidget {
                         ? 'لا شيء محدَّد'
                         : 'مزامنة ${selected.length} صنفاً',
                     appIcon: AppIcons.check,
-                    onPressed: selected.isEmpty ? null : onApply,
+                    onPressed: selected.isEmpty ? null : widget.onApply,
                   ),
                 ),
               ],
@@ -1114,13 +1859,169 @@ class _Appear extends StatelessWidget {
   }
 }
 
+/// يجمع الفهارس المعروضة بالشركة، الأكثر بنوداً أولاً.
+///
+/// الشركة هي وحدة التجميع لأنها وحدة التفاوض: المستودع يتّفق مع شركةٍ
+/// على شروطٍ فتسري على أصنافها، والعرض يُنشأ لها لا لصنفٍ منفرد. فرؤية
+/// البنود مجموعةً هنا هي رؤيةُ العروض قبل إنشائها.
+List<MapEntry<String, List<int>>> _groupByCompany(
+    List<ImportRow> rows, List<int> visible) {
+  final byCompany = <String, List<int>>{};
+
+  for (final i in visible) {
+    final company = rows[i].company?.trim() ?? '';
+    byCompany.putIfAbsent(company.isEmpty ? 'بلا شركة' : company, () => [])
+        .add(i);
+  }
+
+  final groups = byCompany.entries.toList();
+
+  // «بلا شركة» آخراً: لا عرض يُنشأ لها غالباً، فلا تتصدّر ما يُنشأ.
+  groups.sort((a, b) {
+    final aUnnamed = a.key == 'بلا شركة';
+    final bUnnamed = b.key == 'بلا شركة';
+    if (aUnnamed != bUnnamed) return aUnnamed ? 1 : -1;
+    return b.value.length.compareTo(a.value.length);
+  });
+
+  return groups;
+}
+
+/// ترويسة مجموعة شركة داخل قائمة المراجعة.
+class _CompanyHeader extends StatelessWidget {
+  const _CompanyHeader({required this.company, required this.count});
+
+  final String company;
+  final int count;
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = context.colors;
+
+    return Padding(
+      padding: const EdgeInsets.only(
+          top: AppSpacing.sm, bottom: AppSpacing.sm),
+      child: Row(
+        children: [
+          AppIcon(AppIcons.warehouse, size: 16, color: cs.primary),
+          const SizedBox(width: AppSpacing.sm),
+          Expanded(
+            child: Text(company,
+                style: context.text.labelLarge?.copyWith(color: cs.primary),
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis),
+          ),
+          StatusBadge(label: '$count بنداً', tone: StatusTone.brand),
+        ],
+      ),
+    );
+  }
+}
+
+/// لوحة التصنيفات — عدّادٌ وفلترٌ في بطاقةٍ واحدة.
+class _FilterBoard extends StatelessWidget {
+  const _FilterBoard({
+    required this.counts,
+    required this.active,
+    required this.onPick,
+  });
+
+  final Map<_RowFilter, int> counts;
+  final _RowFilter active;
+  final void Function(_RowFilter) onPick;
+
+  @override
+  Widget build(BuildContext context) {
+    // الخانات الفارغة تُطرح: «يلزم تأكيد: ٠» ليس خبراً، ووجوده يُزاحم
+    // ما يعني المستخدم. و«الكل» تبقى دائماً لأنها طريق العودة.
+    final shown = [
+      // بنود العرض أولاً حين توجد: هي الخبر الجديد في الملف، وهي ما
+      // يقود إلى خطوة إنشاء العروض.
+      _RowFilter.offers,
+      _RowFilter.newItem,
+      _RowFilter.priceUpdate,
+      _RowFilter.needsConfirm,
+      _RowFilter.notFound,
+    ].where((f) => (counts[f] ?? 0) > 0).toList();
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        for (var i = 0; i < shown.length; i += 2) ...[
+          if (i > 0) const SizedBox(height: AppSpacing.sm),
+          Row(
+            children: [
+              Expanded(
+                child: _CountTile(
+                  value: counts[shown[i]] ?? 0,
+                  label: shown[i].label,
+                  icon: _iconFor(shown[i]),
+                  tone: shown[i].tone,
+                  active: active == shown[i],
+                  onTap: () => onPick(shown[i]),
+                ),
+              ),
+              const SizedBox(width: AppSpacing.sm),
+              // مكانٌ خالٍ لا بطاقةٌ ممدودة حين يكون العدد فردياً: المدّ
+              // يجعل الأخيرة ضعف أخواتها فتبدو أهمّ بلا سبب.
+              Expanded(
+                child: i + 1 < shown.length
+                    ? _CountTile(
+                        value: counts[shown[i + 1]] ?? 0,
+                        label: shown[i + 1].label,
+                        icon: _iconFor(shown[i + 1]),
+                        tone: shown[i + 1].tone,
+                        active: active == shown[i + 1],
+                        onTap: () => onPick(shown[i + 1]),
+                      )
+                    : const SizedBox.shrink(),
+              ),
+            ],
+          ),
+        ],
+        if (active != _RowFilter.all) ...[
+          const SizedBox(height: AppSpacing.md),
+          Row(
+            children: [
+              AppFilterChip(
+                label: '${active.label} (${counts[active] ?? 0})',
+                onRemoved: () => onPick(active),
+              ),
+              const SizedBox(width: AppSpacing.sm),
+              Text('من ${counts[_RowFilter.all] ?? 0} صنفاً',
+                  style: context.text.labelSmall
+                      ?.copyWith(color: context.tokens.hint)),
+            ],
+          ),
+        ],
+      ],
+    );
+  }
+
+  static AppIcons _iconFor(_RowFilter f) => switch (f) {
+        _RowFilter.offers => AppIcons.gift,
+        _RowFilter.newItem => AppIcons.plus,
+        _RowFilter.priceUpdate => AppIcons.tag,
+        _RowFilter.needsConfirm => AppIcons.alertTriangle,
+        _RowFilter.notFound => AppIcons.x,
+        _RowFilter.all => AppIcons.pill,
+      };
+}
+
 class _CountTile extends StatelessWidget {
   const _CountTile({
     required this.value,
     required this.label,
     required this.icon,
     required this.tone,
+    this.active = false,
+    this.onTap,
   });
+
+  /// البطاقة المفعَّلة تُميَّز بحدٍّ أعرض — لا بلونٍ آخر، فاللون يحمل
+  /// معنى التصنيف أصلاً وتبديله يُضيّعه.
+  final bool active;
+  final VoidCallback? onTap;
 
   final int value;
   final String label;
@@ -1137,13 +2038,16 @@ class _CountTile extends StatelessWidget {
       _ => (context.colors.primary, tk.brandSurface),
     };
 
-    return Container(
+    final tile = Container(
       padding: const EdgeInsets.symmetric(
           horizontal: AppSpacing.md, vertical: AppSpacing.md),
       decoration: BoxDecoration(
         color: bg,
         borderRadius: BorderRadius.circular(AppRadius.lg),
-        border: Border.all(color: fg.withValues(alpha: 0.2)),
+        border: Border.all(
+          color: fg.withValues(alpha: active ? 0.9 : 0.2),
+          width: active ? 1.6 : 1,
+        ),
       ),
       child: Row(
         children: [
@@ -1175,12 +2079,24 @@ class _CountTile extends StatelessWidget {
         ],
       ),
     );
+
+    if (onTap == null) return tile;
+
+    return Material(
+      color: Colors.transparent,
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(AppRadius.lg),
+        child: tile,
+      ),
+    );
   }
 }
 
 class _SummaryCard extends StatelessWidget {
-  const _SummaryCard({required this.summary});
+  const _SummaryCard({required this.summary, this.usage = const ImportUsage()});
   final ImportSummary summary;
+  final ImportUsage usage;
 
   @override
   Widget build(BuildContext context) {
@@ -1235,10 +2151,121 @@ class _SummaryCard extends StatelessWidget {
               ],
             ),
           ],
+
+          // الفاصل تابعٌ للسطر: إظهاره فوق فراغٍ يترك خطّاً معلّقاً
+          // في آخر البطاقة بلا ما يفصله عمّا بعده.
+          if (usage.reported) ...[
+            const SizedBox(height: AppSpacing.md),
+            const Divider(height: 1),
+            const SizedBox(height: AppSpacing.sm),
+            _UsageLine(usage: usage),
+          ],
         ],
       ),
     );
   }
+}
+
+/// مصروف التحليل من وحدات النموذج — إدخالاً وإخراجاً.
+///
+/// يُعرَض لأن الحصّة المجانية محدودة وصاحب المستودع من يدفع ثمن تجاوزها.
+/// والشقّان مفصولان لأن علاجهما مختلف: الإدخال يُخفَّض بملفٍ أصغر أو
+/// أعمدةٍ أقلّ، والإخراج بعدد الأصناف المستخرجة — وجمعُهما في رقمٍ واحد
+/// يُخفي أيّهما ارتفع.
+class _UsageLine extends StatelessWidget {
+  const _UsageLine({required this.usage});
+  final ImportUsage usage;
+
+  @override
+  Widget build(BuildContext context) {
+    final tk = context.tokens;
+
+    // خادمٌ لا يُبلّغ عن المصروف أصلاً: لا سطر. ادّعاء «بلا مصروف» هنا
+    // كذبٌ — الغياب جهلٌ بالرقم لا علمٌ بأنه صفر.
+    if (!usage.reported) return const SizedBox.shrink();
+
+    // صفرٌ صريح خبرٌ طيّب: الملف قُرئ من ترويسته مباشرةً بلا نموذج،
+    // فلم يُصرَف منه شيء. وقولُه خيرٌ من إخفاء السطر.
+    if (usage.isFree) {
+      return Row(
+        children: [
+          AppIcon(AppIcons.check, size: 14, color: tk.success),
+          const SizedBox(width: AppSpacing.sm),
+          Expanded(
+            child: Text(
+              'قُرئ الملف مباشرةً بلا استدعاء النموذج — بلا مصروف',
+              style: context.text.labelSmall?.copyWith(color: tk.success),
+            ),
+          ),
+        ],
+      );
+    }
+
+    return Row(
+      children: [
+        AppIcon(AppIcons.info, size: 14, color: tk.hint),
+        const SizedBox(width: AppSpacing.sm),
+        Text('مصروف التحليل',
+            style: context.text.labelSmall?.copyWith(color: tk.hint)),
+        const Spacer(),
+        _UsageChip(
+          label: 'إدخال',
+          value: usage.inputTokens,
+          tone: StatusTone.neutral,
+        ),
+        const SizedBox(width: AppSpacing.xs),
+        _UsageChip(
+          label: 'إخراج',
+          value: usage.outputTokens,
+          tone: StatusTone.info,
+        ),
+      ],
+    );
+  }
+}
+
+class _UsageChip extends StatelessWidget {
+  const _UsageChip({
+    required this.label,
+    required this.value,
+    required this.tone,
+  });
+
+  final String label;
+  final int value;
+  final StatusTone tone;
+
+  @override
+  Widget build(BuildContext context) {
+    final tk = context.tokens;
+    final (fg, bg) = tone == StatusTone.info
+        ? (context.colors.primary, tk.brandSurface)
+        : (context.colors.onSurfaceVariant, context.colors.surfaceContainerHighest);
+
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: AppSpacing.sm, vertical: 3),
+      decoration: BoxDecoration(
+        color: bg,
+        borderRadius: BorderRadius.circular(AppRadius.full),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Text('$label ',
+              style: context.text.labelSmall?.copyWith(color: fg)),
+          Text(_compact(value),
+              style: context.text.labelSmall
+                  ?.copyWith(color: fg, fontWeight: FontWeight.w700)),
+        ],
+      ),
+    );
+  }
+
+  /// آلافٌ مختصرة: «١٢٬٤٠٠» أطول من أن يُقرأ بطرف العين، و«12.4k» يكفي
+  /// للمقارنة بين ملفٍ وآخر وهو كلّ المقصود من الرقم هنا.
+  static String _compact(int v) => v < 1000
+      ? '$v'
+      : '${(v / 1000).toStringAsFixed(v < 10000 ? 1 : 0)}k';
 }
 
 class _MatchRow extends StatelessWidget {
@@ -1300,14 +2327,31 @@ class _MatchRow extends StatelessWidget {
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis),
                 const SizedBox(height: AppSpacing.xs),
-                Row(
+                // Wrap لا Row: الشروط التجارية تُضاف إلى شارة الحالة،
+                // وصفٌّ بخصمٍ وبونصٍ ومرشّحين يتجاوز عرض السطر فيفيض.
+                Wrap(
+                  spacing: AppSpacing.sm,
+                  runSpacing: AppSpacing.xs,
+                  crossAxisAlignment: WrapCrossAlignment.center,
                   children: [
                     StatusBadge(label: label, tone: tone),
-                    if (row.candidates.length > 1) ...[
-                      const SizedBox(width: AppSpacing.sm),
+
+                    // ما يجعل الصفّ بند عرض — يُعرَض على الصفّ نفسه لا
+                    // في شاشةٍ أخرى: المستخدم يُقرّر ضمَّه إلى العرض وهو
+                    // يراه، لا بعد أن ينتقل.
+                    if ((row.discountPercentage ?? 0) > 0)
+                      StatusBadge(
+                        label: 'خصم ${_num(row.discountPercentage!)}٪',
+                        tone: StatusTone.info,
+                      ),
+                    if (row.bonusLabel != null)
+                      BonusBadge(label: 'بونص ${row.bonusLabel}'),
+
+                    if (row.candidates.length > 1)
                       GestureDetector(
                         onTap: onPickCandidate,
                         child: Row(
+                          mainAxisSize: MainAxisSize.min,
                           children: [
                             AppIcon(AppIcons.chevronForwardRtl,
                                 size: 12, color: context.colors.primary),
@@ -1318,7 +2362,6 @@ class _MatchRow extends StatelessWidget {
                           ],
                         ),
                       ),
-                    ],
                   ],
                 ),
                 if (row.note != null) ...[
@@ -1525,6 +2568,64 @@ class _ReportView extends StatelessWidget {
             tone: StatusTone.info,
             items: report.modified,
             showPrevious: true,
+          ),
+        ],
+
+        // ── العروض المُنشأة ──────────────────────────────────────────
+        // تُعرَض قبل الأعطال لأنها الخبر الأهمّ: شيءٌ جديد صار موجوداً،
+        // ويُقال صراحةً إنه مسوّدة حتى لا يُظنّ أنه بلغ الصيدليات.
+        if (report.offers.isNotEmpty) ...[
+          const SizedBox(height: AppSpacing.md),
+          AppCard(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    AppIcon(AppIcons.gift, size: 18, color: context.colors.primary),
+                    const SizedBox(width: AppSpacing.sm),
+                    Text('أُنشئ ${report.offers.length} عرضاً',
+                        style: context.text.labelLarge),
+                  ],
+                ),
+                const SizedBox(height: AppSpacing.sm),
+                for (final o in report.offers)
+                  Padding(
+                    padding: const EdgeInsets.only(bottom: AppSpacing.xs),
+                    child: Row(
+                      children: [
+                        Expanded(
+                          child: Text(o.title,
+                              style: context.text.bodySmall,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis),
+                        ),
+                        StatusBadge(
+                          label: '${o.itemCount} بنداً',
+                          tone: StatusTone.neutral,
+                        ),
+                      ],
+                    ),
+                  ),
+                const SizedBox(height: AppSpacing.xs),
+                Text(
+                  'كلّها «مسوّدة» — افتح شاشة العروض لمراجعتها ونشرها.',
+                  style: context.text.labelSmall?.copyWith(color: tk.hint),
+                ),
+              ],
+            ),
+          ),
+        ],
+
+        if (report.offerFailures.isNotEmpty) ...[
+          const SizedBox(height: AppSpacing.md),
+          _NoticeCard(
+            appIcon: AppIcons.alertTriangle,
+            tone: StatusTone.warning,
+            title: 'تعذّر إنشاء ${report.offerFailures.length} عرضاً',
+            body: report.offerFailures
+                .map((f) => '${f.company}: ${f.message}')
+                .join('\n'),
           ),
         ],
 

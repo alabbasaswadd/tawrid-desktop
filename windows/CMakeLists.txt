@@ -2,12 +2,20 @@
 cmake_minimum_required(VERSION 3.14)
 project(tawrid_app LANGUAGES CXX)
 
-# Point firebase_core at the local stub SDK so the build never tries to
-# download firebase_cpp_sdk_windows_*.zip from dl.google.com (returns 404).
-# The stub satisfies the CMake requirements without linking real Firebase libs.
-if(NOT DEFINED ENV{FIREBASE_CPP_SDK_DIR})
-  set(ENV{FIREBASE_CPP_SDK_DIR} "C:/firebase_stub")
-endif()
+# firebase_core منزوع من اعتمادات هذا البناء، فلم يعد هنا ما يوجَّه.
+#
+# (كان هنا توجيهٌ إلى stub في C:/firebase_stub لمنع تنزيل الـ SDK، وهو لم
+# يعمل: المجلّد غير موجود فيسقط فحص الإصدار ويُنزَّل الملف كاملاً —
+# وعنوانه يردّ 200 بـ ٩١٦ ميغابايت لا 404 كما قال التعليق. الحلّ الحقيقي
+# نزع الحزمة من pubspec، وهو ما جرى.)
+
+# flutter_local_notifications_windows 1.0.3 يستورد <experimental/coroutine>،
+# وقد حوّل MSVC 14.51 (VS 18) تحذير هجره إلى خطأ ترجمة صريح. التعريف هنا
+# يفكّ ذلك الحارس حتى تُحدَّث الإضافة إلى إصدارٍ يستعمل <coroutine> القياسي.
+#
+# موضعه قبل add_subdirectory مقصود: تعريفات هذا النطاق تنتقل إلى الأدلّة
+# المُضافة بعده وحدها، ومنها أدلّة الإضافات.
+add_compile_definitions(_SILENCE_EXPERIMENTAL_COROUTINE_DEPRECATION_WARNINGS)
 
 # The name of the executable created for the application. Change this to change
 # the on-disk name of your application.
