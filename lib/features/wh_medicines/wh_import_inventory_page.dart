@@ -41,6 +41,19 @@ class _WhImportInventoryPageState extends ConsumerState<WhImportInventoryPage> {
   int _uploadPercent = 0;
   bool _uploading = false;
 
+  /// المزامنة جارية — مرحلةٌ قائمة بذاتها في الواجهة.
+  ///
+  /// كانت ناقصة، وهذا أصل عطب «المزامنة»: الضغط على الزرّ كان ينادي
+  /// الخادم ويبقى `status` على «جاهزة للمراجعة»، فتظلّ الشاشة على
+  /// المراجعة بلا حراك حتى يصل التقرير — فيبدو الزرّ كأنه لم يعمل،
+  /// ويُضغط ثانيةً.
+  bool _applying = false;
+
+  /// ما تمّت مزامنته حتى الآن — الأحدث أولاً، يصل صنفاً صنفاً.
+  final List<ImportItemEvent> _syncItems = [];
+  int _syncDone = 0;
+  int _syncTotal = 0;
+
   /// تعديلات المستخدم في المراجعة — تُرسل عند التطبيق.
   final Map<String, double?> _priceOverrides = {};
   final Map<String, String> _catalogOverrides = {};
@@ -82,6 +95,18 @@ class _WhImportInventoryPageState extends ConsumerState<WhImportInventoryPage> {
           // حتى لا يختلف الشريط بين مصدرَي التحديث فيتراجع أمام العين.
           _progress = _weighted(event.phase, event.done / event.total);
         }
+      });
+    }));
+
+    // صنفٌ انتهت مزامنته — يُضاف إلى القائمة فور وصوله.
+    _subs.add(hub.item.listen((event) {
+      if (!mounted || event.jobId != _job?.jobId) return;
+      setState(() {
+        // الأحدث أولاً: الجديد يظهر في أعلى القائمة حيث تنظر العين،
+        // بدل أن يُدفن تحت عشرات الأسطر السابقة.
+        _syncItems.insert(0, event);
+        _syncDone = event.done;
+        if (event.total > 0) _syncTotal = event.total;
       });
     }));
 
@@ -155,6 +180,9 @@ class _WhImportInventoryPageState extends ConsumerState<WhImportInventoryPage> {
       _notice = null;
       _report = null;
       _rows = const [];
+      _syncItems.clear();
+      _syncDone = 0;
+      _syncTotal = 0;
       _priceOverrides.clear();
       _catalogOverrides.clear();
       _uploading = true;
@@ -369,8 +397,11 @@ class _WhImportInventoryPageState extends ConsumerState<WhImportInventoryPage> {
     if (selected.isEmpty) return;
 
     setState(() {
+      _applying = true;
+      _syncItems.clear();
+      _syncDone = 0;
+      _syncTotal = selected.length;
       _activity = 'يزامن مع مخزونك…';
-      _progress = 1;
       _error = null;
     });
 
@@ -383,10 +414,18 @@ class _WhImportInventoryPageState extends ConsumerState<WhImportInventoryPage> {
                 catalogOverrides: _catalogOverrides,
               );
       if (!mounted) return;
-      setState(() => _report = report);
+      setState(() {
+        _applying = false;
+        _report = report;
+      });
     } on ApiException catch (e) {
       if (!mounted) return;
-      setState(() => _error = e.message);
+      // يعود إلى المراجعة لا إلى شاشةٍ فارغة: تحديداته وتعديلاته ما زالت
+      // في يده، فيُصلح ما يلزم ويُعيد المحاولة بلا أن يرفع الملف ثانيةً.
+      setState(() {
+        _applying = false;
+        _error = e.message;
+      });
     }
   }
 
@@ -464,6 +503,10 @@ class _WhImportInventoryPageState extends ConsumerState<WhImportInventoryPage> {
       _error = null;
       _notice = null;
       _rows = const [];
+      _applying = false;
+      _syncItems.clear();
+      _syncDone = 0;
+      _syncTotal = 0;
       _progress = 0;
       _activity = '';
       _priceOverrides.clear();
@@ -482,6 +525,12 @@ class _WhImportInventoryPageState extends ConsumerState<WhImportInventoryPage> {
         report: _report!,
         onDone: () => Navigator.of(context).maybePop(),
         onAgain: _reset,
+      );
+    } else if (_applying) {
+      body = _SyncingView(
+        items: _syncItems,
+        done: _syncDone,
+        total: _syncTotal,
       );
     } else if (_uploading) {
       body = _WorkingView(
@@ -555,6 +604,7 @@ class _WhImportInventoryPageState extends ConsumerState<WhImportInventoryPage> {
   /// وإلا أُعيد بناء الشاشة بتلاشٍ كامل ثلاث مرات في الثانية.
   String get _stageKey {
     if (_report != null) return 'report';
+    if (_applying) return 'syncing';
     if (_uploading) return 'upload';
     final status = _job?.status;
     if (status == null) return 'idle';
@@ -1312,8 +1362,238 @@ class _PulseState extends State<_Pulse> with SingleTickerProviderStateMixin {
       );
 }
 
+// ── المزامنة الجارية ─────────────────────────────────────────────────────
+/// ما يجري أثناء الكتابة في «أدويتي» — صنفاً صنفاً وقت حدوثه.
+///
+/// الفرق بين هذه الشاشة وغيابها هو الفرق بين «يعمل» و«تعلّق»: المزامنة
+/// تمرّ على مئات الأصناف، وبلا عرضٍ لكل واحدٍ منها يبقى المستخدم أمام
+/// شاشةٍ ساكنة ثم يُفاجأ بالتقرير — ولا يعرف أين تعثّرت إن تعثّرت.
+class _SyncingView extends StatelessWidget {
+  const _SyncingView({
+    required this.items,
+    required this.done,
+    required this.total,
+  });
+
+  final List<ImportItemEvent> items;
+  final int done;
+  final int total;
+
+  @override
+  Widget build(BuildContext context) {
+    final tk = context.tokens;
+    final fraction = total > 0 ? (done / total).clamp(0.0, 1.0) : 0.0;
+
+    final added = items.where((i) => i.outcome == ImportOutcome.added).length;
+    final repriced =
+        items.where((i) => i.outcome == ImportOutcome.repriced).length;
+    final failed = items.where((i) => i.outcome == ImportOutcome.failed).length;
+
+    return Column(
+      children: [
+        Padding(
+          padding: const EdgeInsets.fromLTRB(
+              AppSpacing.page, AppSpacing.xl, AppSpacing.page, AppSpacing.md),
+          child: Column(
+            children: [
+              _ProgressRing(
+                progress: fraction,
+                // القياس يبدأ عند أول صنفٍ يصل: نسبةٌ صفرية مرسومة قبل
+                // أي خبر توحي بتوقّفٍ لم يحدث.
+                measured: done > 0,
+              ),
+              const SizedBox(height: AppSpacing.lg),
+              Text('يزامن مع مخزونك…', style: context.text.titleMedium),
+              const SizedBox(height: AppSpacing.xs),
+              Text(
+                total > 0
+                    ? 'أنجز $done من $total صنفاً — لا تُغلق الشاشة'
+                    : 'لا تُغلق الشاشة حتى تنتهي المزامنة',
+                style: context.text.bodySmall?.copyWith(color: tk.hint),
+                textAlign: TextAlign.center,
+              ),
+              const SizedBox(height: AppSpacing.lg),
+              Wrap(
+                spacing: AppSpacing.sm,
+                runSpacing: AppSpacing.xs,
+                alignment: WrapAlignment.center,
+                children: [
+                  if (added > 0)
+                    StatusBadge(
+                        label: 'أُضيف $added', tone: StatusTone.success),
+                  if (repriced > 0)
+                    StatusBadge(
+                        label: 'حُدِّث سعر $repriced', tone: StatusTone.info),
+                  if (failed > 0)
+                    StatusBadge(
+                        label: 'تعذّر $failed', tone: StatusTone.danger),
+                ],
+              ),
+            ],
+          ),
+        ),
+        const Divider(height: 1),
+        Expanded(
+          child: items.isEmpty
+              ? Center(
+                  child: Text(
+                    'يبدأ بعد لحظة…',
+                    style: context.text.bodySmall?.copyWith(color: tk.hint),
+                  ),
+                )
+              : ListView.builder(
+                  padding: const EdgeInsets.fromLTRB(AppSpacing.page,
+                      AppSpacing.md, AppSpacing.page, AppSpacing.lg),
+                  itemCount: items.length,
+                  itemBuilder: (_, i) => Padding(
+                    padding: const EdgeInsets.only(bottom: AppSpacing.sm),
+                    child: _SyncItemTile(item: items[i]),
+                  ),
+                ),
+        ),
+      ],
+    );
+  }
+}
+
+/// سطرٌ واحد في قائمة المزامنة الحيّة.
+class _SyncItemTile extends StatelessWidget {
+  const _SyncItemTile({required this.item});
+  final ImportItemEvent item;
+
+  @override
+  Widget build(BuildContext context) {
+    final tk = context.tokens;
+
+    final (icon, fg, bg, label) = switch (item.outcome) {
+      ImportOutcome.added => (
+          AppIcons.plus,
+          tk.success,
+          tk.successSurface,
+          'أُضيف'
+        ),
+      ImportOutcome.repriced => (
+          AppIcons.tag,
+          context.colors.primary,
+          tk.brandSurface,
+          'حُدِّث السعر'
+        ),
+      ImportOutcome.failed => (
+          AppIcons.alertTriangle,
+          tk.danger,
+          tk.dangerSurface,
+          'تعذّر'
+        ),
+      _ => (AppIcons.x, tk.hint, context.colors.surface, 'تُخطّي'),
+    };
+
+    // ظهورٌ من أسفل مع تلاشٍ — الوصول يُرى لا يُفاجئ.
+    return TweenAnimationBuilder<double>(
+      key: ValueKey(item.rowNumber),
+      tween: Tween<double>(begin: 0, end: 1),
+      duration: const Duration(milliseconds: 280),
+      curve: Curves.easeOut,
+      builder: (_, t, child) => Opacity(
+        opacity: t,
+        child: Transform.translate(offset: Offset(0, 10 * (1 - t)), child: child),
+      ),
+      child: Container(
+        padding: const EdgeInsets.all(AppSpacing.md),
+        decoration: BoxDecoration(
+          color: bg,
+          borderRadius: BorderRadius.circular(AppRadius.md),
+          border: Border.all(color: fg.withValues(alpha: 0.18)),
+        ),
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            AppIcon(icon, size: 18, color: fg),
+            const SizedBox(width: AppSpacing.sm),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(item.name,
+                      style: context.text.labelLarge,
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis),
+                  const SizedBox(height: 2),
+                  Row(
+                    children: [
+                      Text(label,
+                          style: context.text.labelSmall?.copyWith(color: fg)),
+                      if (item.price != null) ...[
+                        Text(' · ',
+                            style: context.text.labelSmall
+                                ?.copyWith(color: tk.hint)),
+                        // السعر القديم مشطوبٌ بجانب الجديد: التغيير
+                        // يُفهَم من نظرة بلا أن يتذكّر المستخدم ما كان.
+                        if (item.previousPrice != null)
+                          Text(
+                            '${_n(item.previousPrice!)} ← ',
+                            style: context.text.labelSmall?.copyWith(
+                              color: tk.hint,
+                              decoration: TextDecoration.lineThrough,
+                            ),
+                          ),
+                        Text(_n(item.price!), style: context.priceStyle),
+                      ],
+                    ],
+                  ),
+                  if (item.message != null) ...[
+                    const SizedBox(height: 2),
+                    Text(item.message!,
+                        style:
+                            context.text.bodySmall?.copyWith(color: tk.danger)),
+                  ],
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  static String _n(double v) =>
+      v == v.roundToDouble() ? v.toStringAsFixed(0) : v.toString();
+}
+
 // ── المراجعة ─────────────────────────────────────────────────────────────
-class _ReviewView extends StatelessWidget {
+/// تصنيف صفوف المراجعة — قسمةٌ تامّة لا تتداخل.
+///
+/// كل صفٍّ يقع في خانةٍ واحدة لا غير، وإلا صار المجموع أكبر من العدد
+/// وفقد المستخدم ثقته في الأرقام: «جديد» هو المطابَق الحاسم غير المملوك،
+/// والمملوك «تحديث سعر»، والمشكوك فيه «يلزم تأكيد»، وما لا أصل له في
+/// الكتالوج «غير موجود».
+enum _RowFilter {
+  all('الكل'),
+  newItem('جديد'),
+  priceUpdate('تحديث سعر'),
+  needsConfirm('يلزم تأكيد'),
+  notFound('غير موجود');
+
+  const _RowFilter(this.label);
+  final String label;
+
+  bool matches(ImportRow row) => switch (this) {
+        _RowFilter.all => true,
+        _RowFilter.newItem => row.matchStatus == ImportMatch.matched,
+        _RowFilter.priceUpdate => row.matchStatus == ImportMatch.owned,
+        _RowFilter.needsConfirm => row.matchStatus == ImportMatch.ambiguous,
+        _RowFilter.notFound => row.matchStatus == ImportMatch.notFound,
+      };
+
+  StatusTone get tone => switch (this) {
+        _RowFilter.all => StatusTone.neutral,
+        _RowFilter.newItem => StatusTone.success,
+        _RowFilter.priceUpdate => StatusTone.info,
+        _RowFilter.needsConfirm => StatusTone.warning,
+        _RowFilter.notFound => StatusTone.danger,
+      };
+}
+
+class _ReviewView extends StatefulWidget {
   const _ReviewView({
     required this.job,
     required this.rows,
@@ -1337,18 +1617,35 @@ class _ReviewView extends StatelessWidget {
   final VoidCallback onRestart;
 
   @override
+  State<_ReviewView> createState() => _ReviewViewState();
+}
+
+class _ReviewViewState extends State<_ReviewView> {
+  _RowFilter _filter = _RowFilter.all;
+
+  @override
   Widget build(BuildContext context) {
     final tk = context.tokens;
+    final rows = widget.rows;
 
     final selected = rows.where((r) => r.selected && r.isActionable).toList();
-    final newCount =
-        selected.where((r) => r.matchStatus != ImportMatch.owned).length;
-    final updateCount =
-        selected.where((r) => r.matchStatus == ImportMatch.owned).length;
-    final needsConfirm =
-        rows.where((r) => r.matchStatus == ImportMatch.ambiguous).length;
-    final notFound =
-        rows.where((r) => r.matchStatus == ImportMatch.notFound).length;
+
+    // عدّاد لكل خانة — من كل الصفوف لا من المحدَّد وحده: هذه إجابة
+    // «ماذا في الملف»، وشريط الأسفل يُجيب «ماذا ستُزامن».
+    final counts = {
+      for (final f in _RowFilter.values)
+        f: f == _RowFilter.all
+            ? rows.length
+            : rows.where(f.matches).length,
+    };
+
+    // الصفوف المعروضة مع فهارسها الأصلية: الفلترة تُغيّر ترتيب العرض،
+    // والنداءات تُشير إلى مواضع في القائمة الكاملة — فلو مُرِّر فهرس
+    // العرض لبدَّل المستخدمُ صفّاً غير الذي نقره.
+    final visible = <int>[
+      for (var i = 0; i < rows.length; i++)
+        if (_filter.matches(rows[i])) i,
+    ];
 
     return Column(
       children: [
@@ -1357,73 +1654,42 @@ class _ReviewView extends StatelessWidget {
             padding: const EdgeInsets.fromLTRB(
                 AppSpacing.page, AppSpacing.lg, AppSpacing.page, AppSpacing.lg),
             children: [
-              _SummaryCard(summary: job.summary),
+              _SummaryCard(summary: widget.job.summary, usage: widget.job.usage),
 
-              if (error != null) ...[
+              if (widget.error != null) ...[
                 const SizedBox(height: AppSpacing.md),
                 _NoticeCard(
                   appIcon: AppIcons.alertTriangle,
                   tone: StatusTone.danger,
                   title: 'تعذّرت المزامنة',
-                  body: error!,
+                  body: widget.error!,
                 ),
               ],
 
               const SizedBox(height: AppSpacing.lg),
 
-              Row(
-                children: [
-                  Expanded(
-                    child: _CountTile(
-                      value: newCount,
-                      label: 'جديد',
-                      icon: AppIcons.plus,
-                      tone: StatusTone.success,
-                    ),
-                  ),
-                  const SizedBox(width: AppSpacing.sm),
-                  Expanded(
-                    child: _CountTile(
-                      value: updateCount,
-                      label: 'تحديث سعر',
-                      icon: AppIcons.tag,
-                      tone: StatusTone.info,
-                    ),
-                  ),
-                ],
-              ),
-              if (needsConfirm > 0 || notFound > 0) ...[
-                const SizedBox(height: AppSpacing.sm),
-                Row(
-                  children: [
-                    Expanded(
-                      child: _CountTile(
-                        value: needsConfirm,
-                        label: 'يلزم تأكيد',
-                        icon: AppIcons.alertTriangle,
-                        tone: StatusTone.warning,
-                      ),
-                    ),
-                    const SizedBox(width: AppSpacing.sm),
-                    Expanded(
-                      child: _CountTile(
-                        value: notFound,
-                        label: 'غير موجود',
-                        icon: AppIcons.x,
-                        tone: StatusTone.danger,
-                      ),
-                    ),
-                  ],
+              // لوحة الحصيلة: كل بطاقةٍ عدّادٌ وفلترٌ في آن.
+              //
+              // الدمج مقصود — العدّاد يُثير السؤال («غير موجود: ١٢؟»)
+              // والنقر يُجيبه في مكانه، بدل رقمٍ يُعرَض ثم يُترك المستخدم
+              // يبحث عن أصحابه في قائمةٍ بمئات الأسطر.
+              _FilterBoard(
+                counts: counts,
+                active: _filter,
+                onPick: (f) => setState(
+                  () => _filter = _filter == f ? _RowFilter.all : f,
                 ),
-              ],
+              ),
 
               const SizedBox(height: AppSpacing.lg),
 
               AppSectionHeader(
-                title: 'الأصناف (${rows.length})',
+                title: _filter == _RowFilter.all
+                    ? 'الأصناف (${rows.length})'
+                    : '${_filter.label} (${visible.length})',
                 appIcon: AppIcons.pill,
                 trailing: GestureDetector(
-                  onTap: onToggleAll,
+                  onTap: widget.onToggleAll,
                   child: Text('تحديد الكل',
                       style: context.text.labelMedium
                           ?.copyWith(color: context.colors.primary)),
@@ -1437,17 +1703,27 @@ class _ReviewView extends StatelessWidget {
                   description: 'لم يتعرّف الوكيل على أي صنف في هذا الملف',
                   appIcon: AppIcons.pill,
                 )
+              else if (visible.isEmpty)
+                UiEmpty(
+                  message: 'لا صنف في «${_filter.label}»',
+                  description: 'جرّب تصنيفاً آخر أو اعرض الكل',
+                  appIcon: AppIcons.pill,
+                )
               else
-                for (var i = 0; i < rows.length; i++)
+                for (final i in visible)
                   Padding(
+                    key: ValueKey(rows[i].id),
                     padding: const EdgeInsets.only(bottom: AppSpacing.sm),
                     child: _Appear(
-                      index: i,
+                      // ترتيب الظهور من موضع الصفّ في المعروض لا في
+                      // القائمة الكاملة، وإلا تأخّر أولُ سطرٍ بعد الفلترة
+                      // بمقدار فهرسه الأصلي فبدا وكأن شيئاً لا يحدث.
+                      index: visible.indexOf(i),
                       child: _MatchRow(
                         row: rows[i],
-                        onToggle: () => onToggle(i),
-                        onPickCandidate: () => onPickCandidate(i),
-                        onEditPrice: () => onEditPrice(i),
+                        onToggle: () => widget.onToggle(i),
+                        onPickCandidate: () => widget.onPickCandidate(i),
+                        onEditPrice: () => widget.onEditPrice(i),
                       ),
                     ),
                   ),
@@ -1472,7 +1748,7 @@ class _ReviewView extends StatelessWidget {
                   child: AppButton(
                     label: 'ملف آخر',
                     variant: AppButtonVariant.outline,
-                    onPressed: onRestart,
+                    onPressed: widget.onRestart,
                   ),
                 ),
                 const SizedBox(width: AppSpacing.md),
@@ -1483,7 +1759,7 @@ class _ReviewView extends StatelessWidget {
                         ? 'لا شيء محدَّد'
                         : 'مزامنة ${selected.length} صنفاً',
                     appIcon: AppIcons.check,
-                    onPressed: selected.isEmpty ? null : onApply,
+                    onPressed: selected.isEmpty ? null : widget.onApply,
                   ),
                 ),
               ],
@@ -1524,13 +1800,106 @@ class _Appear extends StatelessWidget {
   }
 }
 
+/// لوحة التصنيفات — عدّادٌ وفلترٌ في بطاقةٍ واحدة.
+class _FilterBoard extends StatelessWidget {
+  const _FilterBoard({
+    required this.counts,
+    required this.active,
+    required this.onPick,
+  });
+
+  final Map<_RowFilter, int> counts;
+  final _RowFilter active;
+  final void Function(_RowFilter) onPick;
+
+  @override
+  Widget build(BuildContext context) {
+    // الخانات الفارغة تُطرح: «يلزم تأكيد: ٠» ليس خبراً، ووجوده يُزاحم
+    // ما يعني المستخدم. و«الكل» تبقى دائماً لأنها طريق العودة.
+    final shown = [
+      _RowFilter.newItem,
+      _RowFilter.priceUpdate,
+      _RowFilter.needsConfirm,
+      _RowFilter.notFound,
+    ].where((f) => (counts[f] ?? 0) > 0).toList();
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        for (var i = 0; i < shown.length; i += 2) ...[
+          if (i > 0) const SizedBox(height: AppSpacing.sm),
+          Row(
+            children: [
+              Expanded(
+                child: _CountTile(
+                  value: counts[shown[i]] ?? 0,
+                  label: shown[i].label,
+                  icon: _iconFor(shown[i]),
+                  tone: shown[i].tone,
+                  active: active == shown[i],
+                  onTap: () => onPick(shown[i]),
+                ),
+              ),
+              const SizedBox(width: AppSpacing.sm),
+              // مكانٌ خالٍ لا بطاقةٌ ممدودة حين يكون العدد فردياً: المدّ
+              // يجعل الأخيرة ضعف أخواتها فتبدو أهمّ بلا سبب.
+              Expanded(
+                child: i + 1 < shown.length
+                    ? _CountTile(
+                        value: counts[shown[i + 1]] ?? 0,
+                        label: shown[i + 1].label,
+                        icon: _iconFor(shown[i + 1]),
+                        tone: shown[i + 1].tone,
+                        active: active == shown[i + 1],
+                        onTap: () => onPick(shown[i + 1]),
+                      )
+                    : const SizedBox.shrink(),
+              ),
+            ],
+          ),
+        ],
+        if (active != _RowFilter.all) ...[
+          const SizedBox(height: AppSpacing.md),
+          Row(
+            children: [
+              AppFilterChip(
+                label: '${active.label} (${counts[active] ?? 0})',
+                onRemoved: () => onPick(active),
+              ),
+              const SizedBox(width: AppSpacing.sm),
+              Text('من ${counts[_RowFilter.all] ?? 0} صنفاً',
+                  style: context.text.labelSmall
+                      ?.copyWith(color: context.tokens.hint)),
+            ],
+          ),
+        ],
+      ],
+    );
+  }
+
+  static AppIcons _iconFor(_RowFilter f) => switch (f) {
+        _RowFilter.newItem => AppIcons.plus,
+        _RowFilter.priceUpdate => AppIcons.tag,
+        _RowFilter.needsConfirm => AppIcons.alertTriangle,
+        _RowFilter.notFound => AppIcons.x,
+        _RowFilter.all => AppIcons.pill,
+      };
+}
+
 class _CountTile extends StatelessWidget {
   const _CountTile({
     required this.value,
     required this.label,
     required this.icon,
     required this.tone,
+    this.active = false,
+    this.onTap,
   });
+
+  /// البطاقة المفعَّلة تُميَّز بحدٍّ أعرض — لا بلونٍ آخر، فاللون يحمل
+  /// معنى التصنيف أصلاً وتبديله يُضيّعه.
+  final bool active;
+  final VoidCallback? onTap;
 
   final int value;
   final String label;
@@ -1547,13 +1916,16 @@ class _CountTile extends StatelessWidget {
       _ => (context.colors.primary, tk.brandSurface),
     };
 
-    return Container(
+    final tile = Container(
       padding: const EdgeInsets.symmetric(
           horizontal: AppSpacing.md, vertical: AppSpacing.md),
       decoration: BoxDecoration(
         color: bg,
         borderRadius: BorderRadius.circular(AppRadius.lg),
-        border: Border.all(color: fg.withValues(alpha: 0.2)),
+        border: Border.all(
+          color: fg.withValues(alpha: active ? 0.9 : 0.2),
+          width: active ? 1.6 : 1,
+        ),
       ),
       child: Row(
         children: [
@@ -1585,12 +1957,24 @@ class _CountTile extends StatelessWidget {
         ],
       ),
     );
+
+    if (onTap == null) return tile;
+
+    return Material(
+      color: Colors.transparent,
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(AppRadius.lg),
+        child: tile,
+      ),
+    );
   }
 }
 
 class _SummaryCard extends StatelessWidget {
-  const _SummaryCard({required this.summary});
+  const _SummaryCard({required this.summary, this.usage = const ImportUsage()});
   final ImportSummary summary;
+  final ImportUsage usage;
 
   @override
   Widget build(BuildContext context) {
@@ -1645,10 +2029,121 @@ class _SummaryCard extends StatelessWidget {
               ],
             ),
           ],
+
+          // الفاصل تابعٌ للسطر: إظهاره فوق فراغٍ يترك خطّاً معلّقاً
+          // في آخر البطاقة بلا ما يفصله عمّا بعده.
+          if (usage.reported) ...[
+            const SizedBox(height: AppSpacing.md),
+            const Divider(height: 1),
+            const SizedBox(height: AppSpacing.sm),
+            _UsageLine(usage: usage),
+          ],
         ],
       ),
     );
   }
+}
+
+/// مصروف التحليل من وحدات النموذج — إدخالاً وإخراجاً.
+///
+/// يُعرَض لأن الحصّة المجانية محدودة وصاحب المستودع من يدفع ثمن تجاوزها.
+/// والشقّان مفصولان لأن علاجهما مختلف: الإدخال يُخفَّض بملفٍ أصغر أو
+/// أعمدةٍ أقلّ، والإخراج بعدد الأصناف المستخرجة — وجمعُهما في رقمٍ واحد
+/// يُخفي أيّهما ارتفع.
+class _UsageLine extends StatelessWidget {
+  const _UsageLine({required this.usage});
+  final ImportUsage usage;
+
+  @override
+  Widget build(BuildContext context) {
+    final tk = context.tokens;
+
+    // خادمٌ لا يُبلّغ عن المصروف أصلاً: لا سطر. ادّعاء «بلا مصروف» هنا
+    // كذبٌ — الغياب جهلٌ بالرقم لا علمٌ بأنه صفر.
+    if (!usage.reported) return const SizedBox.shrink();
+
+    // صفرٌ صريح خبرٌ طيّب: الملف قُرئ من ترويسته مباشرةً بلا نموذج،
+    // فلم يُصرَف منه شيء. وقولُه خيرٌ من إخفاء السطر.
+    if (usage.isFree) {
+      return Row(
+        children: [
+          AppIcon(AppIcons.check, size: 14, color: tk.success),
+          const SizedBox(width: AppSpacing.sm),
+          Expanded(
+            child: Text(
+              'قُرئ الملف مباشرةً بلا استدعاء النموذج — بلا مصروف',
+              style: context.text.labelSmall?.copyWith(color: tk.success),
+            ),
+          ),
+        ],
+      );
+    }
+
+    return Row(
+      children: [
+        AppIcon(AppIcons.info, size: 14, color: tk.hint),
+        const SizedBox(width: AppSpacing.sm),
+        Text('مصروف التحليل',
+            style: context.text.labelSmall?.copyWith(color: tk.hint)),
+        const Spacer(),
+        _UsageChip(
+          label: 'إدخال',
+          value: usage.inputTokens,
+          tone: StatusTone.neutral,
+        ),
+        const SizedBox(width: AppSpacing.xs),
+        _UsageChip(
+          label: 'إخراج',
+          value: usage.outputTokens,
+          tone: StatusTone.info,
+        ),
+      ],
+    );
+  }
+}
+
+class _UsageChip extends StatelessWidget {
+  const _UsageChip({
+    required this.label,
+    required this.value,
+    required this.tone,
+  });
+
+  final String label;
+  final int value;
+  final StatusTone tone;
+
+  @override
+  Widget build(BuildContext context) {
+    final tk = context.tokens;
+    final (fg, bg) = tone == StatusTone.info
+        ? (context.colors.primary, tk.brandSurface)
+        : (context.colors.onSurfaceVariant, context.colors.surfaceContainerHighest);
+
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: AppSpacing.sm, vertical: 3),
+      decoration: BoxDecoration(
+        color: bg,
+        borderRadius: BorderRadius.circular(AppRadius.full),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Text('$label ',
+              style: context.text.labelSmall?.copyWith(color: fg)),
+          Text(_compact(value),
+              style: context.text.labelSmall
+                  ?.copyWith(color: fg, fontWeight: FontWeight.w700)),
+        ],
+      ),
+    );
+  }
+
+  /// آلافٌ مختصرة: «١٢٬٤٠٠» أطول من أن يُقرأ بطرف العين، و«12.4k» يكفي
+  /// للمقارنة بين ملفٍ وآخر وهو كلّ المقصود من الرقم هنا.
+  static String _compact(int v) => v < 1000
+      ? '$v'
+      : '${(v / 1000).toStringAsFixed(v < 10000 ? 1 : 0)}k';
 }
 
 class _MatchRow extends StatelessWidget {

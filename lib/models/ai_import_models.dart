@@ -272,6 +272,42 @@ class ImportCounts {
       );
 }
 
+/// ما استهلكه تحليل الملف من وحدات النموذج — إدخالاً وإخراجاً.
+///
+/// يُعرَض لأن الحصّة المجانية محدودة وصاحب المستودع هو من يدفع ثمن
+/// تجاوزها: رقمٌ أمام عينه عند كل ملف يُعلّمه أن ملفاً بألف صف ليس كملفٍ
+/// بخمسين. وصفرٌ في الحقلين يعني أن الملف قُرئ من ترويسته مباشرةً بلا
+/// نموذج — وهو خبرٌ طيّب لا نقص بيانات.
+class ImportUsage {
+  const ImportUsage({
+    this.inputTokens = 0,
+    this.outputTokens = 0,
+    this.reported = false,
+  });
+
+  final int inputTokens;
+  final int outputTokens;
+
+  /// هل أرسل الخادم هذا الحقل أصلاً؟
+  ///
+  /// التمييز لازم ولا يُستغنى عنه بالصفر: خادمٌ قديم لا يعرف الحقل
+  /// وخادمٌ حديثٌ قرأ الملف بلا نموذج كلاهما يصل بصفر، والخبر عنهما
+  /// مختلف تماماً — «بلا مصروف» عن الأول كذب. فالغياب يُخفي السطر،
+  /// والصفر الصريح يُقال.
+  final bool reported;
+
+  int get total => inputTokens + outputTokens;
+
+  /// النموذج لم يُستدعَ — والخادم قال ذلك صراحةً.
+  bool get isFree => reported && total == 0;
+
+  factory ImportUsage.fromJson(Map<String, dynamic>? j) => ImportUsage(
+        inputTokens: (j?['inputTokens'] as num?)?.toInt() ?? 0,
+        outputTokens: (j?['outputTokens'] as num?)?.toInt() ?? 0,
+        reported: j != null,
+      );
+}
+
 /// حالة المهمة الكاملة: التقدّم أثناء التنفيذ، وصفوف المراجعة عند الجهوزية.
 class ImportJob {
   const ImportJob({
@@ -286,6 +322,7 @@ class ImportJob {
     this.failureMessage,
     this.summary = const ImportSummary(),
     this.counts = const ImportCounts(),
+    this.usage = const ImportUsage(),
     this.rows = const [],
     this.createdOn,
   });
@@ -305,6 +342,7 @@ class ImportJob {
 
   final ImportSummary summary;
   final ImportCounts counts;
+  final ImportUsage usage;
   final List<ImportRow> rows;
 
   /// وقت إنشاء المهمة في الخادم — أساس عدّاد «كم مضى».
@@ -326,6 +364,7 @@ class ImportJob {
         failureMessage: _str(j['failureMessage']),
         summary: ImportSummary.fromJson(j['summary'] as Map<String, dynamic>?),
         counts: ImportCounts.fromJson(j['counts'] as Map<String, dynamic>?),
+        usage: ImportUsage.fromJson(j['usage'] as Map<String, dynamic>?),
         rows: ((j['rows'] as List?) ?? const [])
             .whereType<Map<String, dynamic>>()
             .map(ImportRow.fromJson)
@@ -352,6 +391,7 @@ class ImportJob {
         failureMessage: failureMessage,
         summary: summary,
         counts: counts,
+        usage: usage,
         rows: rows ?? this.rows,
         createdOn: createdOn,
       );
@@ -442,6 +482,53 @@ class ImportReport {
           .whereType<Map<String, dynamic>>()
           .map(ImportAppliedItem.fromJson)
           .toList();
+}
+
+/// صنفٌ فرغت المزامنة منه — يصل واحداً واحداً أثناء التطبيق.
+///
+/// بلا هذا كانت المزامنة صندوقاً مغلقاً: المستخدم يضغط «مزامنة» ثم يبقى
+/// أمام شاشة المراجعة بلا حراك حتى يظهر التقرير دفعةً واحدة — فلا يعرف
+/// أهي تعمل أم تعلّقت، ولا عند أي صنفٍ تعثّرت إن تعثّرت.
+class ImportItemEvent {
+  const ImportItemEvent({
+    required this.jobId,
+    required this.rowNumber,
+    required this.name,
+    required this.outcome,
+    required this.done,
+    required this.total,
+    this.price,
+    this.previousPrice,
+    this.message,
+  });
+
+  final String jobId;
+  final int rowNumber;
+  final String name;
+  final ImportOutcome outcome;
+
+  final double? price;
+
+  /// السعر قبل التعديل — للمُعدَّل وحده.
+  final double? previousPrice;
+
+  /// سبب التعذّر إن تعذّر.
+  final String? message;
+
+  final int done;
+  final int total;
+
+  factory ImportItemEvent.fromJson(Map<String, dynamic> j) => ImportItemEvent(
+        jobId: j['jobId'] as String? ?? '',
+        rowNumber: (j['rowNumber'] as num?)?.toInt() ?? 0,
+        name: j['name'] as String? ?? '',
+        outcome: ImportOutcome.fromCode((j['outcome'] as num?)?.toInt()),
+        price: (j['price'] as num?)?.toDouble(),
+        previousPrice: (j['previousPrice'] as num?)?.toDouble(),
+        message: _str(j['message']),
+        done: (j['done'] as num?)?.toInt() ?? 0,
+        total: (j['total'] as num?)?.toInt() ?? 0,
+      );
 }
 
 /// تقدّم وصل عبر القناة الفورية.
