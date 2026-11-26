@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:tawrid_app/app/theme/app_spacing.dart';
 import 'package:tawrid_app/app/theme/app_tokens_ext.dart';
 import 'package:tawrid_app/models/ai_import_models.dart';
+import 'package:tawrid_app/models/geo_models.dart';
 import 'package:tawrid_app/models/sales_offer_models.dart';
 import 'package:tawrid_app/repositories/warehouse_service_area_repository.dart';
 import 'package:tawrid_app/shared/ui/ui.dart';
@@ -23,7 +24,44 @@ class ImportOfferGroup {
   bool get isUnnamed => company.isEmpty;
 
   String get label => isUnnamed ? 'بلا شركة' : company;
+
+  /// عنوانٌ افتراضي يحمل تاريخه.
+  ///
+  /// الخادم يرفض عنواناً مستعملاً («القيمة مستعملة سابقاً — لا يمكن
+  /// تكرارها»)، واستيراد ملفٍ من الشركة نفسها مرّتين أمرٌ عادي: قائمةُ
+  /// أسعارٍ تصل كل شهر. فكان العنوان الثابت «عرض فاركو» يُسقط المزامنة
+  /// كلّها في المرة الثانية. والتاريخ يُميّزه بلا أن يُطالَب المستخدم
+  /// بابتكار اسمٍ في كل مرة — وهو يُحرّره إن شاء.
+  String defaultTitle(DateTime on) {
+    final stamp = '${on.day}/${on.month}';
+    return isUnnamed ? 'عرض مستورد $stamp' : 'عرض $company $stamp';
+  }
+
+  /// خطّةٌ بالقيم الافتراضية — بلا شاشةٍ ولا سؤال.
+  ///
+  /// كل حقلٍ في شاشة الإعداد له افتراضٌ صحيح: العنوان من الشركة، والمدّة
+  /// شهرٌ من اليوم، والاستهداف كامل تغطية المستودع. فسؤال المستخدم عنها
+  /// في كل ملفٍ تأكيدٌ على ما لن يُغيّره.
+  ImportOfferPlan defaultPlan({
+    required DateTime now,
+    required List<TargetRegion> regions,
+  }) =>
+      ImportOfferPlan(
+        company: company,
+        title: defaultTitle(now),
+        startsAt: now,
+        expiresAt: now.add(const Duration(days: 30)),
+        isPublicInRegion: true,
+        targetRegions: regions,
+      );
 }
+
+/// مناطق التغطية مسطَّحةً إلى استهداف — المصدر الوحيد للافتراض.
+List<TargetRegion> regionsOfCoverage(List<Governorate> governorates) => [
+      for (final g in governorates)
+        for (final c in g.cities)
+          TargetRegion(governorate: g.name, city: c.name),
+    ];
 
 /// إعداد العروض قبل المزامنة.
 ///
@@ -64,11 +102,10 @@ class _ImportOfferSetupPageState extends ConsumerState<ImportOfferSetupPage> {
   @override
   void initState() {
     super.initState();
+    final now = DateTime.now();
     for (final g in widget.groups) {
       _enabled.add(g.company);
-      _titles[g.company] = TextEditingController(
-        text: g.isUnnamed ? 'عرض مستورد' : 'عرض ${g.company}',
-      );
+      _titles[g.company] = TextEditingController(text: g.defaultTitle(now));
     }
   }
 
@@ -85,14 +122,10 @@ class _ImportOfferSetupPageState extends ConsumerState<ImportOfferSetupPage> {
   /// هو الافتراضي الصحيح لا تسهيلاً: المستودع لا يبيع خارج ما يخدمه،
   /// والخادم يرفض عرضاً يستهدف منطقةً خارج نطاقه. فالبدء بكامل التغطية
   /// يُصيب في الغالب، ويُضيّقه من يريد تضييقه.
-  void _seedRegions(List<dynamic> governorates) {
+  void _seedRegions(List<Governorate> governorates) {
     if (_regionsTouched || _regions.isNotEmpty) return;
 
-    _regions = [
-      for (final g in governorates)
-        for (final c in g.cities as List<dynamic>)
-          TargetRegion(governorate: g.name as String, city: c.name as String),
-    ];
+    _regions = regionsOfCoverage(governorates);
   }
 
   Future<void> _pickDate({required bool isStart}) async {

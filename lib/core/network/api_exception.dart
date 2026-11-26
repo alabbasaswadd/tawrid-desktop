@@ -66,11 +66,15 @@ class ApiException implements Exception {
       final errorsMap = body['errors'];
       if (errorsMap is Map && errorsMap.isNotEmpty) {
         final parts = <String>[];
-        for (final v in errorsMap.values) {
-          if (v is List) {
-            for (final err in v) {
-              parts.add(_toArabic(err.toString()));
-            }
+        for (final entry in errorsMap.entries) {
+          final value = entry.value;
+          if (value is! List) continue;
+          // اسم الحقل يُذكر مع رسالته: «القيمة مستعملة سابقاً» وحدها
+          // تُحيّر — أيُّ قيمة؟ ومعها الحقل تصير قابلة للإصلاح.
+          final field = _fieldName(entry.key.toString());
+          for (final err in value) {
+            final text = _toArabic(err.toString());
+            parts.add(field == null ? text : '$field: $text');
           }
         }
         if (parts.isNotEmpty) {
@@ -106,6 +110,40 @@ class ApiException implements Exception {
         return false;
     }
   }
+
+  /// اسم الحقل بالعربية — أو بمفتاحه كما جاء إن لم يُعرَف.
+  ///
+  /// مفاتيح ProblemDetails تأتي بأسماء الخصائص في الخادم، وقد تحمل
+  /// فهرساً («Offers[0].Title»): يُؤخذ آخر مقطعٍ منها فهو اسم الحقل.
+  /// والمفاتيح العامة (`$`، `request`) لا تُضيف شيئاً فتُترك.
+  static String? _fieldName(String key) {
+    final last = key.split('.').last.replaceAll(RegExp(r'\[\d+\]'), '').trim();
+    if (last.isEmpty || last == r'$' || _genericKeys.contains(last.toLowerCase())) {
+      return null;
+    }
+    return _fieldNames[last.toLowerCase()] ?? last;
+  }
+
+  static const _genericKeys = {'request', 'model', 'body', 'dto', 'command'};
+
+  static const _fieldNames = <String, String>{
+    'title': 'العنوان',
+    'name': 'الاسم',
+    'displayname': 'الاسم',
+    'company': 'الشركة',
+    'price': 'السعر',
+    'quantity': 'الكمية',
+    'description': 'الوصف',
+    'startsat': 'تاريخ البدء',
+    'expiresat': 'تاريخ الانتهاء',
+    'targetregions': 'مناطق الاستهداف',
+    'email': 'البريد الإلكتروني',
+    'username': 'اسم المستخدم',
+    'phonenumber': 'رقم الهاتف',
+    'phone': 'رقم الهاتف',
+    'password': 'كلمة المرور',
+    'catalogitemid': 'صنف الكتالوج',
+  };
 
   static String _toArabic(String e) {
     if (e.contains('is already taken')) return 'اسم المستخدم مستخدم من قبل';

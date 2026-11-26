@@ -10,6 +10,7 @@ import 'package:tawrid_app/core/realtime/inventory_import_hub.dart';
 import 'package:tawrid_app/features/wh_medicines/import_offer_setup_page.dart';
 import 'package:tawrid_app/models/ai_import_models.dart';
 import 'package:tawrid_app/repositories/inventory_import_repository.dart';
+import 'package:tawrid_app/repositories/warehouse_service_area_repository.dart';
 import 'package:tawrid_app/shared/ui/ui.dart';
 
 /// استيراد المخزون من ملف Excel بمساعدة وكيل الـ AI.
@@ -64,6 +65,12 @@ class _WhImportInventoryPageState extends ConsumerState<WhImportInventoryPage> {
   /// أن تكون أمام العين قبل إنشائه لا بعده — فيرى المستخدم ما يُنتظر
   /// إنشاؤه وما أُنشئ، بدل قائمةٍ تنبت من العدم ولا يعرف متى تكتمل.
   List<_PlannedOffer> _offerPlans = const [];
+
+  /// العروض كما حرّرها المستخدم في شاشة الإعداد.
+  ///
+  /// `null` تعني «لم يفتحها» لا «لا عروض»: القائمة الفارغة قرارٌ صريح
+  /// («بلا عروض») يجب أن يُحترم، والفرق بينهما لا يحمله طولُ القائمة.
+  List<ImportOfferPlan>? _offerDraft;
 
   /// سقط ردّ التطبيق والكتابة ماضيةٌ في الخادم.
   ///
@@ -238,6 +245,7 @@ class _WhImportInventoryPageState extends ConsumerState<WhImportInventoryPage> {
       _syncItems.clear();
       _syncOffers.clear();
       _offerPlans = const [];
+      _offerDraft = null;
       _syncDone = 0;
       _syncTotal = 0;
       _priceOverrides.clear();
@@ -463,22 +471,23 @@ class _WhImportInventoryPageState extends ConsumerState<WhImportInventoryPage> {
     if (selected.isEmpty) return;
 
     // ── خطوة العروض ───────────────────────────────────────────────────
-    // تظهر متى حمل المحدَّد شرطاً تجارياً، وتُتخطّى لملف الجرد الصرف:
-    // لا معنى لسؤال عن مناطقَ ومُددٍ لملفٍ لا عرض فيه.
+    // لم تعد شاشةً تُفرَض بين المراجعة والمزامنة: كل حقلٍ فيها له افتراضٌ
+    // صحيح (العنوان من الشركة وتاريخه، والمدّة شهر، والاستهداف كامل
+    // التغطية)، وسؤالُ المستخدم عنها في كل ملفٍ تأكيدٌ على ما لن يُغيّره.
+    // فتُبنى الخطة هنا، ويفتح الشاشة من أرادها من شريط المراجعة.
     var offers = const <ImportOfferPlan>[];
     final groups = _offerGroups;
 
     if (groups.isNotEmpty) {
-      final chosen = await Navigator.of(context).push<List<ImportOfferPlan>>(
-        MaterialPageRoute(
-          builder: (_) => ImportOfferSetupPage(groups: groups),
-        ),
-      );
+      offers = _offerDraft ?? _autoOffers(groups);
 
-      // العودة بلا نتيجة (زرّ الرجوع) إلغاءٌ للمزامنة كلها لا مضيٌّ
-      // بلا عروض: المستخدم تراجع، ولم يقل «زامن المخزون وحده».
-      if (chosen == null || !mounted) return;
-      offers = chosen;
+      // تعذّر الافتراض — لا مناطق تغطيةٍ معروفة، والخادم يرفض عرضاً بلا
+      // استهداف. فلا مفرّ من سؤالٍ هنا، وهو السؤال الوحيد الباقي.
+      if (offers.isEmpty && _offerDraft == null) {
+        final chosen = await _editOffers(groups);
+        if (chosen == null || !mounted) return;
+        offers = chosen;
+      }
     }
 
     // الاستطلاع الأول يتوقّف هنا: المهمة غادرت مراحل التحليل، ومراقبة
@@ -532,6 +541,34 @@ class _WhImportInventoryPageState extends ConsumerState<WhImportInventoryPage> {
       }
       _stopApply(err.message);
     }
+  }
+
+  /// خطّة العروض بالقيم الافتراضية — فارغةٌ إن لم تُعرَف مناطق التغطية.
+  List<ImportOfferPlan> _autoOffers(List<ImportOfferGroup> groups) {
+    final served = ref.read(myServiceGovernoratesProvider).value;
+    if (served == null || served.isEmpty) return const [];
+
+    final regions = regionsOfCoverage(served);
+    if (regions.isEmpty) return const [];
+
+    final now = DateTime.now();
+    return [
+      for (final g in groups) g.defaultPlan(now: now, regions: regions),
+    ];
+  }
+
+  /// يفتح شاشة إعداد العروض ويحفظ ما خرج منها.
+  Future<List<ImportOfferPlan>?> _editOffers(
+    List<ImportOfferGroup> groups,
+  ) async {
+    final chosen = await Navigator.of(context).push<List<ImportOfferPlan>>(
+      MaterialPageRoute(
+        builder: (_) => ImportOfferSetupPage(groups: groups),
+      ),
+    );
+    if (chosen == null || !mounted) return null;
+    setState(() => _offerDraft = chosen);
+    return chosen;
   }
 
   /// بطاقات العروض كما ستُعرَض — من الخطة لا من الأخبار.
@@ -801,6 +838,7 @@ class _WhImportInventoryPageState extends ConsumerState<WhImportInventoryPage> {
       _syncItems.clear();
       _syncOffers.clear();
       _offerPlans = const [];
+      _offerDraft = null;
       _syncDone = 0;
       _syncTotal = 0;
       _progress = 0;
@@ -814,6 +852,11 @@ class _WhImportInventoryPageState extends ConsumerState<WhImportInventoryPage> {
   @override
   Widget build(BuildContext context) {
     final job = _job;
+
+    // مناطق التغطية تُطلَب من أول إطار لا عند الحاجة إليها: هي افتراض
+    // استهداف العروض، ولو انتُظر طلبُها إلى لحظة الضغط على «مزامنة»
+    // لوجدها الافتراض فارغةً فسأل المستخدم سؤالاً كان يملك جوابه.
+    ref.watch(myServiceGovernoratesProvider);
 
     final Widget body;
     if (_report != null) {
@@ -862,6 +905,7 @@ class _WhImportInventoryPageState extends ConsumerState<WhImportInventoryPage> {
         analyzedRows: job.analyzedRows,
       );
     } else if (job != null && job.status == ImportStatus.ready) {
+      final groups = _offerGroups;
       body = _ReviewView(
         job: job,
         rows: _rows,
@@ -872,6 +916,9 @@ class _WhImportInventoryPageState extends ConsumerState<WhImportInventoryPage> {
         onEditPrice: _editPrice,
         onApply: _apply,
         onRestart: _reset,
+        offerCount: (_offerDraft ?? _autoOffers(groups)).length,
+        offerCompanies: groups.length,
+        onEditOffers: groups.isEmpty ? null : () => _editOffers(groups),
       );
     } else {
       body = _IdleView(onPick: _pick, error: _error, notice: _notice);
@@ -2156,6 +2203,9 @@ class _ReviewView extends StatefulWidget {
     required this.onApply,
     required this.onRestart,
     this.error,
+    this.offerCount = 0,
+    this.offerCompanies = 0,
+    this.onEditOffers,
   });
 
   final ImportJob job;
@@ -2167,6 +2217,16 @@ class _ReviewView extends StatefulWidget {
   final void Function(int index) onEditPrice;
   final VoidCallback onApply;
   final VoidCallback onRestart;
+
+  /// كم عرضاً ستُنشئه المزامنة بالخطة الحالية.
+  final int offerCount;
+
+  /// كم شركةً في المحدَّد تحمل شرطاً تجارياً — قد تفوق [offerCount] حين
+  /// يتعذّر الافتراض، وحينها يُقال إن العروض تحتاج ضبطاً.
+  final int offerCompanies;
+
+  /// يفتح شاشة إعداد العروض — `null` لملفٍ لا عرض فيه.
+  final VoidCallback? onEditOffers;
 
   @override
   State<_ReviewView> createState() => _ReviewViewState();
@@ -2325,13 +2385,31 @@ class _ReviewViewState extends State<_ReviewView> {
                     onPressed: widget.onRestart,
                   ),
                 ),
+
+                // ما ستفعله العروض مقولٌ هنا، وتحريرها نقرةٌ لمن أراد.
+                // كانت شاشةً تُفرَض بين المراجعة والمزامنة، فصارت خياراً.
+                if (widget.onEditOffers != null) ...[
+                  const SizedBox(width: AppSpacing.md),
+                  Expanded(
+                    flex: 2,
+                    child: _OfferPlanChip(
+                      count: widget.offerCount,
+                      companies: widget.offerCompanies,
+                      onTap: widget.onEditOffers!,
+                    ),
+                  ),
+                ],
+
                 const SizedBox(width: AppSpacing.md),
                 Expanded(
                   flex: 2,
                   child: AppButton(
                     label: selected.isEmpty
                         ? 'لا شيء محدَّد'
-                        : 'مزامنة ${selected.length} صنفاً',
+                        : widget.offerCount > 0
+                            ? 'مزامنة ${selected.length} صنفاً '
+                                'و${widget.offerCount} عرضاً'
+                            : 'مزامنة ${selected.length} صنفاً',
                     appIcon: AppIcons.check,
                     onPressed: selected.isEmpty ? null : widget.onApply,
                   ),
@@ -2341,6 +2419,65 @@ class _ReviewViewState extends State<_ReviewView> {
           ),
         ),
       ],
+    );
+  }
+}
+
+/// ملخّص خطة العروض في شريط المراجعة — ونقرةٌ تفتح تحريرها.
+class _OfferPlanChip extends StatelessWidget {
+  const _OfferPlanChip({
+    required this.count,
+    required this.companies,
+    required this.onTap,
+  });
+
+  final int count;
+  final int companies;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = context.colors;
+    final tk = context.tokens;
+
+    // خطةٌ بلا عروضٍ رغم وجود شركات: الاستهداف لم يُعرَف بعد، والمزامنة
+    // ستسأل عنه. يُقال الآن لا عندها.
+    final needsSetup = count == 0 && companies > 0;
+    final fg = needsSetup ? tk.warning : cs.primary;
+
+    return Material(
+      color: needsSetup ? tk.warningSurface : tk.brandSurface,
+      borderRadius: BorderRadius.circular(AppRadius.md),
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(AppRadius.md),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(
+              horizontal: AppSpacing.md, vertical: 14),
+          child: Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              AppIcon(needsSetup ? AppIcons.alertTriangle : AppIcons.gift,
+                  size: 18, color: fg),
+              const SizedBox(width: AppSpacing.sm),
+              Flexible(
+                child: Text(
+                  needsSetup
+                      ? 'العروض تحتاج ضبطاً'
+                      : count == 0
+                          ? 'بلا عروض'
+                          : '$count عروض جاهزة',
+                  style: context.text.labelMedium?.copyWith(color: fg),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ),
+              const SizedBox(width: AppSpacing.sm),
+              AppIcon(AppIcons.pencil, size: 14, color: fg),
+            ],
+          ),
+        ),
+      ),
     );
   }
 }
