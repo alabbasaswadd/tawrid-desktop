@@ -3,7 +3,15 @@ import 'enums.dart';
 // دواء ضمن قائمة المستودع — مُدمَج ببيانات الكاتلوغ للعرض المباشر.
 class WarehouseMedicine {
   final String id;
-  final String catalogItemId;
+
+  /// صنف الكتالوج الوطني — فارغٌ لصنفٍ حرّ.
+  ///
+  /// المستودع يحمل مكمّلاتٍ ومستحضرات تجميل ومستوراتٍ لا وجود لها في
+  /// النشرة الوطنية، فصارت تُحفَظ بهويّتها الخاصّة بلا مرجعٍ في الكتالوج.
+  /// وكان هذا الحقل يُقرأ `as String` قطعاً، فأول صنفٍ حرٍّ يصل كان
+  /// يُسقط قائمة «أدويتي» كلّها بـ«type 'Null' is not a subtype of
+  /// type 'String'» — فيبدو الاستيراد كأنه لم يكتب شيئاً وقد كتب.
+  final String? catalogItemId;
 
   /// كود ساكو من الكتالوج الوطني — مرجع الصنف المعتمد.
   /// فارغ إن كان الخادم أقدم من إضافة الحقل، فيُخفى سطره بدل أن يظهر فارغاً.
@@ -69,7 +77,7 @@ class WarehouseMedicine {
 
   factory WarehouseMedicine.fromJson(Map<String, dynamic> j) => WarehouseMedicine(
         id: j['id'] as String,
-        catalogItemId: j['catalogItemId'] as String,
+        catalogItemId: j['catalogItemId'] as String?,
         sakoCode: j['sakoCode'] as String? ?? '',
         brandName: j['brandName'] as String? ?? '',
         brandNameArabic: j['brandNameArabic'] as String? ?? '',
@@ -89,4 +97,7 @@ class WarehouseMedicine {
       );
 
   String get displayName => brandNameArabic.isNotEmpty ? brandNameArabic : brandName;
+
+  /// صنفٌ حرّ — يحمله المستودع بهويّته لا بمرجعٍ في الكتالوج.
+  bool get isCatalogFree => catalogItemId == null;
 }

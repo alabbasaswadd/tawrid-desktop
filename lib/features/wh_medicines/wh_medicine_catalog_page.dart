@@ -64,7 +64,11 @@ class _WhMedicineCatalogPageState extends ConsumerState<WhMedicineCatalogPage> {
     });
     try {
       final mine = await ref.read(warehouseMedicineRepositoryProvider).getMine();
-      _addedCatalogIds = mine.map((m) => m.catalogItemId).toSet();
+      // الأصناف الحرّة لا مرجع لها في الكتالوج، فلا تُعلَّم فيه «مُضاف».
+      _addedCatalogIds = mine
+          .map((m) => m.catalogItemId)
+          .whereType<String>()
+          .toSet();
       await _runSearch(reset: true);
     } catch (e) {
       setState(() {
