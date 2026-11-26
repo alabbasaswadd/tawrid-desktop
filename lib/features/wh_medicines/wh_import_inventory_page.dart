@@ -55,6 +55,9 @@ class _WhImportInventoryPageState extends ConsumerState<WhImportInventoryPage> {
   int _syncDone = 0;
   int _syncTotal = 0;
 
+  /// العروض التي أُنشئت أثناء المزامنة — الأحدث أولاً.
+  final List<ImportOfferEvent> _syncOffers = [];
+
   /// تعديلات المستخدم في المراجعة — تُرسل عند التطبيق.
   final Map<String, double?> _priceOverrides = {};
   final Map<String, String> _catalogOverrides = {};
@@ -109,6 +112,12 @@ class _WhImportInventoryPageState extends ConsumerState<WhImportInventoryPage> {
         _syncDone = event.done;
         if (event.total > 0) _syncTotal = event.total;
       });
+    }));
+
+    // عرضٌ فرغ إنشاؤه — يُعرَض بطاقةً فوق قائمة الأصناف.
+    _subs.add(hub.offer.listen((event) {
+      if (!mounted || event.jobId != _job?.jobId) return;
+      setState(() => _syncOffers.insert(0, event));
     }));
 
     _subs.add(hub.ready.listen((jobId) {
@@ -182,6 +191,7 @@ class _WhImportInventoryPageState extends ConsumerState<WhImportInventoryPage> {
       _report = null;
       _rows = const [];
       _syncItems.clear();
+      _syncOffers.clear();
       _syncDone = 0;
       _syncTotal = 0;
       _priceOverrides.clear();
@@ -428,6 +438,7 @@ class _WhImportInventoryPageState extends ConsumerState<WhImportInventoryPage> {
     setState(() {
       _applying = true;
       _syncItems.clear();
+      _syncOffers.clear();
       _syncDone = 0;
       _syncTotal = selected.length;
       _activity = 'يزامن مع مخزونك…';
@@ -535,6 +546,7 @@ class _WhImportInventoryPageState extends ConsumerState<WhImportInventoryPage> {
       _rows = const [];
       _applying = false;
       _syncItems.clear();
+      _syncOffers.clear();
       _syncDone = 0;
       _syncTotal = 0;
       _progress = 0;
@@ -559,6 +571,7 @@ class _WhImportInventoryPageState extends ConsumerState<WhImportInventoryPage> {
     } else if (_applying) {
       body = _SyncingView(
         items: _syncItems,
+        offers: _syncOffers,
         done: _syncDone,
         total: _syncTotal,
       );
@@ -1401,11 +1414,13 @@ class _PulseState extends State<_Pulse> with SingleTickerProviderStateMixin {
 class _SyncingView extends StatelessWidget {
   const _SyncingView({
     required this.items,
+    required this.offers,
     required this.done,
     required this.total,
   });
 
   final List<ImportItemEvent> items;
+  final List<ImportOfferEvent> offers;
   final int done;
   final int total;
 
@@ -1457,6 +1472,11 @@ class _SyncingView extends StatelessWidget {
                   if (failed > 0)
                     StatusBadge(
                         label: 'تعذّر $failed', tone: StatusTone.danger),
+                  if (offers.any((o) => o.created))
+                    StatusBadge(
+                      label: 'عروض ${offers.where((o) => o.created).length}',
+                      tone: StatusTone.brand,
+                    ),
                 ],
               ),
             ],
@@ -1464,24 +1484,132 @@ class _SyncingView extends StatelessWidget {
         ),
         const Divider(height: 1),
         Expanded(
-          child: items.isEmpty
+          child: items.isEmpty && offers.isEmpty
               ? Center(
                   child: Text(
                     'يبدأ بعد لحظة…',
                     style: context.text.bodySmall?.copyWith(color: tk.hint),
                   ),
                 )
-              : ListView.builder(
+              // العروض فوق الأصناف لا مبثوثةً بينها: العرض حصيلةُ عشرات
+              // البنود، وإخفاؤه وسط قائمةٍ تمرّ بسرعة يُضيّع أهمّ ما حدث.
+              : ListView(
                   padding: const EdgeInsets.fromLTRB(AppSpacing.page,
                       AppSpacing.md, AppSpacing.page, AppSpacing.lg),
-                  itemCount: items.length,
-                  itemBuilder: (_, i) => Padding(
-                    padding: const EdgeInsets.only(bottom: AppSpacing.sm),
-                    child: _SyncItemTile(item: items[i]),
-                  ),
+                  children: [
+                    for (final offer in offers)
+                      Padding(
+                        padding: const EdgeInsets.only(bottom: AppSpacing.sm),
+                        child: _SyncOfferCard(offer: offer),
+                      ),
+                    if (offers.isNotEmpty && items.isNotEmpty) ...[
+                      const SizedBox(height: AppSpacing.xs),
+                      AppSectionHeader(
+                        title: 'الأصناف',
+                        appIcon: AppIcons.pill,
+                      ),
+                      const SizedBox(height: AppSpacing.sm),
+                    ],
+                    for (final item in items)
+                      Padding(
+                        padding: const EdgeInsets.only(bottom: AppSpacing.sm),
+                        child: _SyncItemTile(item: item),
+                      ),
+                  ],
                 ),
         ),
       ],
+    );
+  }
+}
+
+/// بطاقة عرضٍ أُنشئ أثناء المزامنة.
+///
+/// بطاقةٌ لا سطر: العرض ليس صنفاً — هو حصيلة عشرات البنود، وله عنوانٌ
+/// وشركةٌ وعدد. وعرضُه بحجم السطر يُساويه بصنفٍ واحد وليس سواءً.
+class _SyncOfferCard extends StatelessWidget {
+  const _SyncOfferCard({required this.offer});
+  final ImportOfferEvent offer;
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = context.colors;
+    final tk = context.tokens;
+    final ok = offer.created;
+
+    final fg = ok ? cs.primary : tk.danger;
+    final bg = ok ? tk.brandSurface : tk.dangerSurface;
+
+    return TweenAnimationBuilder<double>(
+      key: ValueKey('offer-${offer.company}-${offer.done}'),
+      tween: Tween<double>(begin: 0, end: 1),
+      duration: const Duration(milliseconds: 320),
+      curve: Curves.easeOut,
+      builder: (_, t, child) => Opacity(
+        opacity: t,
+        child: Transform.translate(
+            offset: Offset(0, 12 * (1 - t)), child: child),
+      ),
+      child: Container(
+        padding: const EdgeInsets.all(AppSpacing.md),
+        decoration: BoxDecoration(
+          color: bg,
+          borderRadius: BorderRadius.circular(AppRadius.lg),
+          border: Border.all(color: fg.withValues(alpha: 0.35), width: 1.4),
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                AppIcon(ok ? AppIcons.gift : AppIcons.alertTriangle,
+                    size: 20, color: fg),
+                const SizedBox(width: AppSpacing.sm),
+                Expanded(
+                  child: Text(
+                    ok ? 'أُضيف عرض' : 'تعذّر إنشاء عرض',
+                    style: context.text.labelMedium?.copyWith(color: fg),
+                  ),
+                ),
+                if (offer.total > 1)
+                  Text('${offer.done} / ${offer.total}',
+                      style: context.text.labelSmall?.copyWith(color: tk.hint)),
+              ],
+            ),
+            const SizedBox(height: AppSpacing.xs),
+            Text(offer.title,
+                style: context.text.titleMedium,
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis),
+            const SizedBox(height: AppSpacing.xs),
+            Wrap(
+              spacing: AppSpacing.sm,
+              runSpacing: AppSpacing.xs,
+              crossAxisAlignment: WrapCrossAlignment.center,
+              children: [
+                if (offer.company.isNotEmpty)
+                  StatusBadge(
+                      label: offer.company, tone: StatusTone.neutral),
+                if (ok)
+                  StatusBadge(
+                    label: '${offer.itemCount} صنفاً',
+                    tone: StatusTone.brand,
+                  ),
+              ],
+            ),
+            if (!ok && offer.message != null) ...[
+              const SizedBox(height: AppSpacing.xs),
+              Text(offer.message!,
+                  style: context.text.bodySmall?.copyWith(color: tk.danger)),
+            ],
+            if (ok) ...[
+              const SizedBox(height: AppSpacing.xs),
+              Text('مسوّدة — تُنشَر من شاشة العروض',
+                  style: context.text.labelSmall?.copyWith(color: tk.hint)),
+            ],
+          ],
+        ),
+      ),
     );
   }
 }

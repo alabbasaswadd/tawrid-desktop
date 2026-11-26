@@ -678,6 +678,51 @@ class ImportItemEvent {
       );
 }
 
+/// عرضٌ فرغت المزامنة منه — يصل لحظة إنشائه.
+///
+/// منفصلٌ عن [ImportItemEvent] لأنه ليس صنفاً: له عنوانٌ وشركةٌ وعددُ
+/// بنود، ويُعرَض بطاقةً بشكله لا سطراً في قائمة الأصناف.
+class ImportOfferEvent {
+  const ImportOfferEvent({
+    required this.jobId,
+    required this.company,
+    required this.title,
+    required this.itemCount,
+    required this.done,
+    required this.total,
+    this.offerId,
+    this.message,
+  });
+
+  final String jobId;
+
+  /// معرّف العرض المُنشأ — فارغٌ إن تعذّر.
+  final String? offerId;
+
+  final String company;
+  final String title;
+  final int itemCount;
+
+  /// سبب التعذّر إن تعذّر.
+  final String? message;
+
+  final int done;
+  final int total;
+
+  bool get created => offerId != null && message == null;
+
+  factory ImportOfferEvent.fromJson(Map<String, dynamic> j) => ImportOfferEvent(
+        jobId: j['jobId'] as String? ?? '',
+        offerId: _str(j['offerId']),
+        company: j['company'] as String? ?? '',
+        title: j['title'] as String? ?? '',
+        itemCount: (j['itemCount'] as num?)?.toInt() ?? 0,
+        message: _str(j['message']),
+        done: (j['done'] as num?)?.toInt() ?? 0,
+        total: (j['total'] as num?)?.toInt() ?? 0,
+      );
+}
+
 /// تقدّم وصل عبر القناة الفورية.
 class ImportProgressEvent {
   const ImportProgressEvent({

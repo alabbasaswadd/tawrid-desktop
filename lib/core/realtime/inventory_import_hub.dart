@@ -40,6 +40,7 @@ class InventoryImportHub {
 
   final _progress = StreamController<ImportProgressEvent>.broadcast();
   final _item = StreamController<ImportItemEvent>.broadcast();
+  final _offer = StreamController<ImportOfferEvent>.broadcast();
   final _ready = StreamController<String>.broadcast();
   final _failed = StreamController<ImportFailedEvent>.broadcast();
   final _reconnected = StreamController<void>.broadcast();
@@ -50,6 +51,9 @@ class InventoryImportHub {
   /// صنفٌ انتهت مزامنته — يصل واحداً واحداً أثناء التطبيق، فتُبنى
   /// القائمة أمام عين المستخدم بدل انتظار التقرير.
   Stream<ImportItemEvent> get item => _item.stream;
+
+  /// عرضٌ انتهى إنشاؤه أو تعذّر — يصل أثناء المزامنة.
+  Stream<ImportOfferEvent> get offer => _offer.stream;
 
   /// معرّف مهمة صارت جاهزة للمراجعة.
   Stream<String> get ready => _ready.stream;
@@ -91,6 +95,7 @@ class InventoryImportHub {
 
     connection.on('importProgress', _onProgress);
     connection.on('importItem', _onItem);
+    connection.on('importOffer', _onOffer);
     connection.on('importReady', _onReady);
     connection.on('importFailed', _onFailed);
 
@@ -136,6 +141,12 @@ class InventoryImportHub {
     _item.add(ImportItemEvent.fromJson(data));
   }
 
+  void _onOffer(List<Object?>? args) {
+    final data = _firstMap(args);
+    if (data == null || _offer.isClosed) return;
+    _offer.add(ImportOfferEvent.fromJson(data));
+  }
+
   void _onReady(List<Object?>? args) {
     final data = _firstMap(args);
     final jobId = data?['jobId'] as String?;
@@ -162,6 +173,7 @@ class InventoryImportHub {
     disconnect();
     _progress.close();
     _item.close();
+    _offer.close();
     _ready.close();
     _failed.close();
     _reconnected.close();
