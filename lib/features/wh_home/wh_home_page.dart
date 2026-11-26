@@ -241,14 +241,29 @@ class _WhHomePageState extends ConsumerState<WhHomePage> {
       padding: EdgeInsets.fromLTRB(
           gutter, AppSpacing.sm, gutter, AppSpacing.x3l),
       children: [
-        // العدّادات صفٌّ يتمدّد: ثلاثة على المكتب، واثنان على الضيّق.
-        Row(
-          children: [
-            for (var i = 0; i < counters.length; i++) ...[
-              if (i > 0) const SizedBox(width: AppSpacing.md),
-              Expanded(child: counters[i]),
-            ],
-          ],
+        // ── العدّادات لا تتمدّد بعدد ما فيها ─────────────────────────────
+        // كانت `Expanded` لكلٍّ منها، فعدّادان على شاشةٍ عريضة يصيران
+        // بطاقتين بعرض ثمانمئة بكسل، في كلٍّ رقمٌ وكلمتان وفراغٌ يملأ
+        // الباقي. والبطاقة تتّسع بما فيها لا بما بقي من الشاشة.
+        //
+        // فتُقسَّم كأن الصفّ ثلاثة دائماً: الثلاثة تملؤه، والاثنان
+        // يأخذان ثلثيه ويبقى الثلث فارغاً — وهو فراغٌ بين البطاقات لا
+        // داخلها.
+        LayoutBuilder(
+          builder: (context, constraints) {
+            final slots = counters.length < 3 ? 3 : counters.length;
+            final width =
+                (constraints.maxWidth - AppSpacing.md * (slots - 1)) / slots;
+
+            return Row(
+              children: [
+                for (var i = 0; i < counters.length; i++) ...[
+                  if (i > 0) const SizedBox(width: AppSpacing.md),
+                  SizedBox(width: width, child: counters[i]),
+                ],
+              ],
+            );
+          },
         ),
         // بانر قيد التجهيز — يظهر فقط حين توجد طلبات تُعالَج.
         if (_processing > 0) ...[

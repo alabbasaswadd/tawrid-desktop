@@ -1296,13 +1296,19 @@ class _ModeChooser extends StatelessWidget {
           );
         }
 
-        return Row(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            Expanded(child: cards[0]),
-            const SizedBox(width: AppSpacing.md),
-            Expanded(child: cards[1]),
-          ],
+        // IntrinsicHeight شرطٌ لا تحسين: البطاقتان تتساويان بأطولهما
+        // بـ stretch، وهي تطلب ارتفاعاً محدوداً — والشاشة داخل
+        // SingleChildScrollView فارتفاعها غير محدود. فبلا هذا يُطلب من
+        // البطاقة ارتفاعٌ لا نهائي وتبقى الشاشة بيضاء.
+        return IntrinsicHeight(
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Expanded(child: cards[0]),
+              const SizedBox(width: AppSpacing.md),
+              Expanded(child: cards[1]),
+            ],
+          ),
         );
       },
     );
