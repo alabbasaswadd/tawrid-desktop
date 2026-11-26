@@ -3381,6 +3381,10 @@ class _FilterBoard extends StatelessWidget {
       _RowFilter.notFound,
     ].where((f) => (counts[f] ?? 0) > 0).toList();
 
+    // لا خانةَ واحدة تُعرَض لوحدها: لوحةُ حصيلةٍ ببطاقةٍ واحدة ليست
+    // لوحة، والعدد مقولٌ في ترويسة القائمة أصلاً.
+    if (shown.isEmpty) return const SizedBox.shrink();
+
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -3390,9 +3394,15 @@ class _FilterBoard extends StatelessWidget {
         // عريضة تسعهنّ في سطر، فيُقرأ الملخّص كلّه بنظرةٍ واحدة.
         LayoutBuilder(
           builder: (context, constraints) {
-            // بطاقةٌ لكل ٢٠٠ بكسل: أضيق منها يقطع «خارج الكتالوج» سطرين.
-            final columns =
-                (constraints.maxWidth / 200).floor().clamp(2, shown.length);
+            // بطاقةٌ لكل ٢٠٠ بكسل، ولا تتجاوز عدد المعروض.
+            //
+            // والحدّ الأدنى `shown.length` لا ٢: ملفٌّ كلّه صنفٌ جديد
+            // يُخرج خانةً واحدة، و`clamp(2, 1)` يرمي
+            // «Invalid argument(s): 2» فتُغطّى الشاشة بالأحمر — وقد
+            // وقع ذلك على ملفٍ حقيقي بمئةٍ وسبعةٍ وأربعين صنفاً.
+            final columns = (constraints.maxWidth / 200)
+                .floor()
+                .clamp(1, shown.length);
 
             return Column(
               children: [

@@ -63,8 +63,17 @@ int columnsFor(
   double gap = AppSpacing.md,
 }) {
   if (width <= 0) return 1;
+
+  // السقف لا ينزل تحت الواحد مهما مُرِّر: نداءٌ بـ`max: items.length`
+  // على قائمةٍ فارغة يُنتج `clamp(1, 0)` — و«الأدنى فوق الأعلى» يرمي
+  // «Invalid argument(s): 1» فتُغطّى الشاشة بالأحمر.
+  //
+  // والحارس هنا لا عند كل نداء: هذه الدالّة تُنادى من ست شاشات،
+  // وحمايةٌ في واحدة تترك الخمس.
+  final ceiling = max < 1 ? 1 : max;
+
   final n = ((width + gap) / (minTile + gap)).floor();
-  return n.clamp(1, max);
+  return n.clamp(1, ceiling);
 }
 
 extension ResponsiveX on BuildContext {
