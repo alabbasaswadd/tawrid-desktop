@@ -87,9 +87,29 @@ List<TargetRegion> regionsOfCoverage(List<Governorate> governorates) => [
 /// والاستهداف في ترويسةٍ ثابتة فوقها — قرارٌ واحد يسري على الكل، ومكانُه
 /// حيث يُرى دائماً لا حيث يُبحَث عنه بالتمرير.
 class ImportOfferSetupPage extends ConsumerStatefulWidget {
-  const ImportOfferSetupPage({required this.groups, super.key});
+  const ImportOfferSetupPage({
+    required this.groups,
+    this.embedded = false,
+    this.onChanged,
+    super.key,
+  });
 
   final List<ImportOfferGroup> groups;
+
+  /// مضمَّنةً داخل مراحل الاستيراد لا شاشةً قائمة بذاتها.
+  ///
+  /// الفرق سطحٌ لا جوهر: لا Scaffold ولا شريط إجراءٍ أسفلها — المرحلة
+  /// تملك شريطها، وشريطان أحدهما فوق الآخر يُربكان.
+  ///
+  /// وتُضمَّن ولا تُنسَخ: المنطق هنا (الافتراضات، والحاجب، والتغطية
+  /// الفارغة) واحدٌ في الحالتين، ونسخةٌ ثانية منه تفترق عند أول تعديل.
+  final bool embedded;
+
+  /// يُنادى عند كل تغيير: الخطّة الجارية وسببُ تعذّرها إن تعذّرت.
+  ///
+  /// المالك هو من يُقرّر متى تُستعمل — فالمرحلة تحتاج أن تعرف الخطّة
+  /// قبل أن يضغط المستخدم شيئاً، لا بعد «حفظ».
+  final void Function(List<ImportOfferPlan> plans, String? blocker)? onChanged;
 
   @override
   ConsumerState<ImportOfferSetupPage> createState() =>
@@ -192,6 +212,35 @@ class _ImportOfferSetupPageState extends ConsumerState<ImportOfferSetupPage> {
     return null;
   }
 
+  /// الخطّة كما هي الآن — بصرف النظر عن صلاحيتها.
+  List<ImportOfferPlan> get _plans => widget.groups
+      .where((g) => _enabled.contains(g.company))
+      .map((g) => ImportOfferPlan(
+            company: g.company,
+            title: _titles[g.company]!.text.trim(),
+            startsAt: _startsAt,
+            expiresAt: _standing ? null : _expiresAt,
+            isPublicInRegion: true,
+            targetRegions: _regions,
+            includeAllItems: g.includeAllItems,
+          ))
+      .toList();
+
+  /// يُبلّغ المالك بالخطّة الجارية — بعد الإطار لا أثناءه.
+  ///
+  /// `onChanged` يُحدّث حالة المالك، ونداؤها داخل `build` يُطلب إعادةُ
+  /// بناءٍ أثناء بناء — وهو ما يرفضه Flutter.
+  void _notify() {
+    final cb = widget.onChanged;
+    if (cb == null) return;
+
+    final plans = _plans;
+    final blocker = _blocker;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) cb(plans, blocker);
+    });
+  }
+
   void _submit() {
     if (_blocker != null) return;
 
@@ -225,9 +274,9 @@ class _ImportOfferSetupPageState extends ConsumerState<ImportOfferSetupPage> {
     if (served != null && served.isNotEmpty) _seedRegions(served);
     _noCoverage = served != null && served.isEmpty;
 
-    return Scaffold(
-      appBar: const InnerTopBar(title: 'إعداد العروض'),
-      body: Column(
+    _notify();
+
+    final content = Column(
         children: [
           if (_noCoverage)
             Padding(
@@ -291,6 +340,9 @@ class _ImportOfferSetupPageState extends ConsumerState<ImportOfferSetupPage> {
             ),
           ),
 
+          // الشريط للشاشة القائمة بذاتها وحدها: المرحلة تملك شريطها،
+          // وشريطان أحدهما فوق الآخر يُربكان.
+          if (!widget.embedded)
           Container(
             padding: const EdgeInsets.fromLTRB(AppSpacing.page, AppSpacing.md,
                 AppSpacing.page, AppSpacing.lg),
@@ -349,7 +401,14 @@ class _ImportOfferSetupPageState extends ConsumerState<ImportOfferSetupPage> {
             ),
           ),
         ],
-      ),
+      );
+
+    // مضمَّنةً تُسلَّم كما هي؛ وقائمةً بذاتها تُلبَس هيكل الشاشة.
+    if (widget.embedded) return content;
+
+    return Scaffold(
+      appBar: const InnerTopBar(title: 'إعداد العروض'),
+      body: content,
     );
   }
 }

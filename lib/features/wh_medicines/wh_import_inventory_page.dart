@@ -75,6 +75,9 @@ class _WhImportInventoryPageState extends ConsumerState<WhImportInventoryPage> {
   /// («بلا عروض») يجب أن يُحترم، والفرق بينهما لا يحمله طولُ القائمة.
   List<ImportOfferPlan>? _offerDraft;
 
+  /// سبب تعذّر خطّة العروض كما أبلغت به مرحلتها — فارغٌ إن صلحت.
+  String? _offerBlocker;
+
   /// الخطّة المُقرّة، محفوظةً حتى تُنادى خطوة العروض.
   ///
   /// العروض لم تعد حقلاً في طلب التطبيق بل نداءً بعده، فيجب أن تبقى
@@ -449,7 +452,7 @@ class _WhImportInventoryPageState extends ConsumerState<WhImportInventoryPage> {
       context: context,
       builder: (ctx) => AlertDialog(
         backgroundColor: ctx.colors.surface,
-        title: Text(row.matched?.displayName ?? row.name,
+        title: Text(row.matched?.displayName ?? row.displayLabel,
             style: ctx.text.titleMedium),
         content: AppTextField(
           controller: controller,
@@ -1090,7 +1093,15 @@ class _WhImportInventoryPageState extends ConsumerState<WhImportInventoryPage> {
           // من جديد، وإلا بقيت تُشير إلى شركاتٍ لم تعد كما كانت.
           _offerDraft = null;
         }),
-        onEditOffers: groups.isEmpty ? null : () => _editOffers(groups),
+        offerGroups: groups,
+        offerBlocker: groups.isEmpty ? null : _offerBlocker,
+        onOffersChanged: (plans, blocker) {
+          if (_offerDraft == plans && _offerBlocker == blocker) return;
+          setState(() {
+            _offerDraft = plans;
+            _offerBlocker = blocker;
+          });
+        },
       );
     } else {
       body = _IdleView(
@@ -1818,7 +1829,7 @@ class _DiscoveredList extends StatelessWidget {
                         const SizedBox(width: AppSpacing.sm),
                         Expanded(
                           child: Text(
-                            row.name,
+                            row.displayLabel,
                             style: context.text.labelSmall,
                             maxLines: 1,
                             overflow: TextOverflow.ellipsis,
@@ -2530,6 +2541,15 @@ enum _RowFilter {
   const _RowFilter(this.label);
   final String label;
 
+  /// التسمية كما تُقرأ في وضع الاستيراد الجاري.
+  ///
+  /// «خارج الكتالوج» إنذارٌ في المسار العادي — صنفٌ لم يُطابِق النشرة
+  /// الوطنية فيُراجَع. أمّا وقد عُطّلت المطابقة فلا كتالوج يُخرَج منه
+  /// أصلاً، والصفّ الذي لا نظير له في «أدويتي» صنفٌ **جديد** لا شاذّ.
+  /// والكلمتان تقودان إلى سلوكين مختلفين تماماً.
+  String labelIn({required bool skipCatalog}) =>
+      skipCatalog && this == _RowFilter.notFound ? 'جديد' : label;
+
   bool matches(ImportRow row) => switch (this) {
         _RowFilter.all => true,
 
@@ -2578,13 +2598,25 @@ class _ReviewView extends StatefulWidget {
     required this.onIgnoreGaps,
     required this.priceListMode,
     required this.onPriceListChanged,
+    required this.offerGroups,
+    required this.onOffersChanged,
     this.error,
     this.offerCount = 0,
     this.offerCompanies = 0,
+    this.offerBlocker,
     this.noCoverage = false,
     this.gapsIgnored = false,
-    this.onEditOffers,
   });
+
+  /// بنود العرض مجموعةً بالشركة — مادّة مرحلة العروض.
+  final List<ImportOfferGroup> offerGroups;
+
+  /// تُنادى من مرحلة العروض عند كل تغيير في خطّتها.
+  final void Function(List<ImportOfferPlan> plans, String? blocker)
+      onOffersChanged;
+
+  /// سبب تعذّر خطّة العروض — يُعطّل زرّ المزامنة ويُقال بدل أن يُخمَّن.
+  final String? offerBlocker;
 
   /// أقرّ المستخدم أن يمضي رغم الثغرات — فتُطوى اللافتة ولا تُعاد.
   ///
@@ -2616,7 +2648,6 @@ class _ReviewView extends StatefulWidget {
   final int offerCompanies;
 
   /// يفتح شاشة إعداد العروض — `null` لملفٍ لا عرض فيه.
-  final VoidCallback? onEditOffers;
 
   /// المستودع بلا مناطق تغطية — سببٌ يُقال باسمه لا يُلمَّح إليه.
   final bool noCoverage;
@@ -2625,8 +2656,25 @@ class _ReviewView extends StatefulWidget {
   State<_ReviewView> createState() => _ReviewViewState();
 }
 
+/// مراحل المراجعة — قرارٌ لكل مرحلة لا قرارٌ واحد مركَّب.
+///
+/// كانت صفحةً واحدة: جدولُ الأصناف، وشريحةُ عروضٍ في شريط الأسفل تفتح
+/// شاشةً أخرى، وزرُّ مزامنةٍ يفعل الاثنين معاً. فالمستخدم يُقرّ ما لم
+/// يره — العروض تُنشأ بافتراضاتٍ لم تُعرَض عليه إلا إن فتح الشاشة.
+///
+/// وفصلُهما يجعل كل إقرارٍ على ما رآه صاحبه.
+enum _ReviewStep {
+  items('الأصناف', AppIcons.pill),
+  offers('العروض', AppIcons.gift);
+
+  const _ReviewStep(this.label, this.icon);
+  final String label;
+  final AppIcons icon;
+}
+
 class _ReviewViewState extends State<_ReviewView> {
   _RowFilter _filter = _RowFilter.all;
+  _ReviewStep _step = _ReviewStep.items;
 
   @override
   Widget build(BuildContext context) {
@@ -2637,6 +2685,9 @@ class _ReviewViewState extends State<_ReviewView> {
 
     // بنود العرض المحدَّدة التي ينقصها سعرُها — ما لن يصل إلى أي عرض.
     final gaps = rows.where((r) => r.isOfferGap).length;
+
+    // رُفع الملف بلا مطابقة كتالوج؟ التسميات تتبع ذلك.
+    final skip = widget.job.skipCatalogMatching;
 
     // ما سيتبدّل فعلاً في «أدويتي» — جواب المزامنة الثانية.
     final changed = rows.where((r) => r.willChange).length;
@@ -2675,8 +2726,33 @@ class _ReviewViewState extends State<_ReviewView> {
         if (_filter.matches(rows[i])) i,
     ];
 
+    // لا مرحلةَ عروضٍ حين لا عروض: مرحلةٌ فارغة تُرى خطوةً ضائعة.
+    final hasOffers = widget.offerCompanies > 0;
+    if (!hasOffers && _step == _ReviewStep.offers) {
+      _step = _ReviewStep.items;
+    }
+
     return Column(
       children: [
+        // ── شريط المراحل ─────────────────────────────────────────────
+        // يُرى دائماً: المستخدم يعرف أين هو وكم بقي، ويعود إلى ما مضى
+        // بنقرة. وكانت العروض شاشةً تُفتَح وتُغلَق فلا يُعرَف أهي جزءٌ
+        // من المسار أم طريقٌ جانبي.
+        _StepBar(
+          current: _step,
+          hasOffers: hasOffers,
+          onPick: (s) => setState(() => _step = s),
+        ),
+
+        if (_step == _ReviewStep.offers)
+          Expanded(
+            child: ImportOfferSetupPage(
+              groups: widget.offerGroups,
+              embedded: true,
+              onChanged: widget.onOffersChanged,
+            ),
+          )
+        else
         Expanded(
           child: ListView(
             padding: const EdgeInsets.fromLTRB(
@@ -2749,6 +2825,7 @@ class _ReviewViewState extends State<_ReviewView> {
               _FilterBoard(
                 counts: counts,
                 active: _filter,
+                skipCatalog: widget.job.skipCatalogMatching,
                 onPick: (f) => setState(
                   () => _filter = _filter == f ? _RowFilter.all : f,
                 ),
@@ -2759,7 +2836,8 @@ class _ReviewViewState extends State<_ReviewView> {
               AppSectionHeader(
                 title: _filter == _RowFilter.all
                     ? 'الأصناف (${rows.length})'
-                    : '${_filter.label} (${visible.length})',
+                    : '${_filter.labelIn(skipCatalog: skip)} '
+                        '(${visible.length})',
                 appIcon: AppIcons.pill,
                 trailing: GestureDetector(
                   onTap: widget.onToggleAll,
@@ -2778,7 +2856,8 @@ class _ReviewViewState extends State<_ReviewView> {
                 )
               else if (visible.isEmpty)
                 UiEmpty(
-                  message: 'لا صنف في «${_filter.label}»',
+                  message:
+                      'لا صنف في «${_filter.labelIn(skipCatalog: skip)}»',
                   description: 'جرّب تصنيفاً آخر أو اعرض الكل',
                   appIcon: AppIcons.pill,
                 )
@@ -2843,35 +2922,79 @@ class _ReviewViewState extends State<_ReviewView> {
                   ),
                 ),
 
-                // ما ستفعله العروض مقولٌ هنا، وتحريرها نقرةٌ لمن أراد.
-                // كانت شاشةً تُفرَض بين المراجعة والمزامنة، فصارت خياراً.
-                if (widget.onEditOffers != null) ...[
+                // ── حصيلةُ المرحلة قبل زرّها ──────────────────────────
+                // ما سيحدث مقولٌ بالكلمات لا مستنتَجاً من نصّ الزرّ.
+                Expanded(
+                  flex: 2,
+                  child: Text(
+                    _step == _ReviewStep.items
+                        ? (selected.isEmpty
+                            ? 'لا صنف محدَّد — لن يُكتب شيء'
+                            : '${selected.length} صنفاً سيُزامَن')
+                        : (widget.offerBlocker ??
+                            '${widget.offerCount} '
+                                '${widget.offerCount == 1 ? "عرضاً" : "عروضاً"} '
+                                'سيُنشأ من بنود الملف'),
+                    style: context.text.labelSmall?.copyWith(
+                      color: _step == _ReviewStep.offers &&
+                              widget.offerBlocker != null
+                          ? tk.warning
+                          : tk.hint,
+                    ),
+                    textAlign: TextAlign.center,
+                  ),
+                ),
+
+                const SizedBox(width: AppSpacing.md),
+
+                // ── الزرّ يتبع المرحلة ─────────────────────────────────
+                // في الأصناف يقود إلى العروض، وفي العروض يُزامن. وكان
+                // زرّاً واحداً يفعل الاثنين معاً — فيُقِرّ المستخدمُ
+                // عروضاً لم يرها.
+                if (_step == _ReviewStep.items && hasOffers)
+                  Expanded(
+                    flex: 2,
+                    child: AppButton(
+                      label: 'التالي: العروض',
+                      appIcon: AppIcons.chevronForwardRtl,
+                      onPressed: selected.isEmpty
+                          ? null
+                          : () => setState(() => _step = _ReviewStep.offers),
+                    ),
+                  )
+                else if (_step == _ReviewStep.items)
+                  Expanded(
+                    flex: 2,
+                    child: AppButton(
+                      label: selected.isEmpty
+                          ? 'لا شيء محدَّد'
+                          : 'مزامنة ${selected.length} صنفاً',
+                      appIcon: AppIcons.check,
+                      onPressed: selected.isEmpty ? null : widget.onApply,
+                    ),
+                  )
+                else ...[
+                  Expanded(
+                    child: AppButton(
+                      label: 'رجوع للأصناف',
+                      variant: AppButtonVariant.outline,
+                      onPressed: () =>
+                          setState(() => _step = _ReviewStep.items),
+                    ),
+                  ),
                   const SizedBox(width: AppSpacing.md),
                   Expanded(
                     flex: 2,
-                    child: _OfferPlanChip(
-                      count: widget.offerCount,
-                      companies: widget.offerCompanies,
-                      noCoverage: widget.noCoverage,
-                      onTap: widget.onEditOffers!,
+                    child: AppButton(
+                      label: 'مزامنة ${selected.length} صنفاً '
+                          'و${widget.offerCount} عرضاً',
+                      appIcon: AppIcons.check,
+                      onPressed: widget.offerBlocker != null
+                          ? null
+                          : widget.onApply,
                     ),
                   ),
                 ],
-
-                const SizedBox(width: AppSpacing.md),
-                Expanded(
-                  flex: 2,
-                  child: AppButton(
-                    label: selected.isEmpty
-                        ? 'لا شيء محدَّد'
-                        : widget.offerCount > 0
-                            ? 'مزامنة ${selected.length} صنفاً '
-                                'و${widget.offerCount} عرضاً'
-                            : 'مزامنة ${selected.length} صنفاً',
-                    appIcon: AppIcons.check,
-                    onPressed: selected.isEmpty ? null : widget.onApply,
-                  ),
-                ),
               ],
             ),
           ),
@@ -3131,68 +3254,6 @@ class _GapNotice extends StatelessWidget {
   }
 }
 
-/// ملخّص خطة العروض في شريط المراجعة — ونقرةٌ تفتح تحريرها.
-class _OfferPlanChip extends StatelessWidget {
-  const _OfferPlanChip({
-    required this.count,
-    required this.companies,
-    required this.onTap,
-    this.noCoverage = false,
-  });
-
-  final int count;
-  final int companies;
-  final bool noCoverage;
-  final VoidCallback onTap;
-
-  @override
-  Widget build(BuildContext context) {
-    final cs = context.colors;
-    final tk = context.tokens;
-
-    // خطةٌ بلا عروضٍ رغم وجود شركات: الاستهداف لم يُعرَف بعد، والمزامنة
-    // ستسأل عنه. يُقال الآن لا عندها.
-    final needsSetup = count == 0 && companies > 0;
-    final fg = needsSetup ? tk.warning : cs.primary;
-
-    return Material(
-      color: needsSetup ? tk.warningSurface : tk.brandSurface,
-      borderRadius: BorderRadius.circular(AppRadius.md),
-      child: InkWell(
-        onTap: onTap,
-        borderRadius: BorderRadius.circular(AppRadius.md),
-        child: Padding(
-          padding: const EdgeInsets.symmetric(
-              horizontal: AppSpacing.md, vertical: 14),
-          child: Row(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              AppIcon(needsSetup ? AppIcons.alertTriangle : AppIcons.gift,
-                  size: 18, color: fg),
-              const SizedBox(width: AppSpacing.sm),
-              Flexible(
-                child: Text(
-                  needsSetup
-                      ? (noCoverage
-                          ? 'حدّد مناطق تغطيتك أولاً'
-                          : 'العروض تحتاج ضبطاً')
-                      : count == 0
-                          ? 'بلا عروض'
-                          : '$count عروض جاهزة',
-                  style: context.text.labelMedium?.copyWith(color: fg),
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                ),
-              ),
-              const SizedBox(width: AppSpacing.sm),
-              AppIcon(AppIcons.pencil, size: 14, color: fg),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-}
 
 /// ظهورٌ متتالٍ للعناصر — القائمة تتجمّع أمام العين بدل أن تقع دفعةً واحدة.
 class _Appear extends StatelessWidget {
@@ -3288,11 +3349,15 @@ class _FilterBoard extends StatelessWidget {
     required this.counts,
     required this.active,
     required this.onPick,
+    required this.skipCatalog,
   });
 
   final Map<_RowFilter, int> counts;
   final _RowFilter active;
   final void Function(_RowFilter) onPick;
+
+  /// رُفع الملف بلا مطابقة كتالوج — فـ«خارج الكتالوج» تصير «جديد».
+  final bool skipCatalog;
 
   @override
   Widget build(BuildContext context) {
@@ -3344,7 +3409,8 @@ class _FilterBoard extends StatelessWidget {
                           child: j < shown.length
                               ? _CountTile(
                                   value: counts[shown[j]] ?? 0,
-                                  label: shown[j].label,
+                                  label: shown[j].labelIn(
+                                      skipCatalog: skipCatalog),
                                   icon: _iconFor(shown[j]),
                                   tone: shown[j].tone,
                                   active: active == shown[j],
@@ -3365,7 +3431,8 @@ class _FilterBoard extends StatelessWidget {
           Row(
             children: [
               AppFilterChip(
-                label: '${active.label} (${counts[active] ?? 0})',
+                label: '${active.labelIn(skipCatalog: skipCatalog)} '
+                    '(${counts[active] ?? 0})',
                 onRemoved: () => onPick(active),
               ),
               const SizedBox(width: AppSpacing.sm),
@@ -3702,7 +3769,7 @@ class _MatchRow extends StatelessWidget {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text(item?.displayName ?? row.name,
+                Text(item?.displayName ?? row.displayLabel,
                     style: context.text.labelLarge,
                     maxLines: 2,
                     overflow: TextOverflow.ellipsis),
@@ -3808,7 +3875,7 @@ class _MatchRow extends StatelessWidget {
       if (row.form != null) parts.add(row.form!);
       if (row.manufacturer != null) parts.add(row.manufacturer!);
     }
-    return parts.isEmpty ? 'كما ورد: ${row.name}' : parts.join(' · ');
+    return parts.isEmpty ? 'كما ورد: ${row.displayLabel}' : parts.join(' · ');
   }
 }
 
@@ -3833,7 +3900,7 @@ class _CandidateSheet extends StatelessWidget {
           children: [
             AppSectionHeader(
               title: 'اختر الصنف الصحيح',
-              subtitle: 'كما ورد في الملف: ${row.name}',
+              subtitle: 'كما ورد في الملف: ${row.displayLabel}',
               appIcon: AppIcons.pill,
             ),
             const SizedBox(height: AppSpacing.md),
@@ -4711,6 +4778,169 @@ class _NoticeCard extends StatelessWidget {
             ),
           ),
         ],
+      ),
+    );
+  }
+}
+
+/// شريط مراحل المراجعة — أين أنت، وكم بقي، وعودةٌ بنقرة.
+///
+/// كانت العروض شاشةً تُفتَح من شريحةٍ في شريط الأسفل وتُغلَق، فلا يُعرَف
+/// أهي جزءٌ من المسار أم طريقٌ جانبي — ومن لم يفتحها أقرّ عروضاً بُنيت
+/// بافتراضاتٍ لم يرها.
+///
+/// والمرحلة الثالثة («المزامنة») تُعرَض ولا تُنقَر: هي نتيجةُ الزرّ لا
+/// خطوةٌ يُذهَب إليها، لكنّ إخفاءها يجعل المسار يبدو مرحلتين فلا يُعرَف
+/// أين ينتهي.
+class _StepBar extends StatelessWidget {
+  const _StepBar({
+    required this.current,
+    required this.hasOffers,
+    required this.onPick,
+  });
+
+  final _ReviewStep current;
+
+  /// في الملف بنودُ عرض؟ بلاها لا مرحلةَ عروضٍ أصلاً.
+  final bool hasOffers;
+
+  final ValueChanged<_ReviewStep> onPick;
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = context.colors;
+    final tk = context.tokens;
+
+    final steps = <_ReviewStep>[
+      _ReviewStep.items,
+      if (hasOffers) _ReviewStep.offers,
+    ];
+
+    return Container(
+      padding: const EdgeInsets.symmetric(
+          horizontal: AppSpacing.page, vertical: AppSpacing.md),
+      decoration: BoxDecoration(
+        color: cs.surface,
+        border: Border(bottom: BorderSide(color: cs.outline)),
+      ),
+      child: Row(
+        children: [
+          for (var i = 0; i < steps.length; i++) ...[
+            if (i > 0)
+              Expanded(
+                child: Container(
+                  height: 1,
+                  margin: const EdgeInsets.symmetric(
+                      horizontal: AppSpacing.md),
+                  color: cs.outline,
+                ),
+              ),
+            _StepChip(
+              number: i + 1,
+              step: steps[i],
+              // ما مضى يُنقَر للعودة، وما هو آتٍ لا: التقدّم يمرّ بزرّ
+              // المرحلة ليُحسَب ما فيها قبل مغادرتها.
+              active: current == steps[i],
+              done: steps.indexOf(current) > i,
+              onTap: steps.indexOf(current) > i ? () => onPick(steps[i]) : null,
+            ),
+          ],
+
+          // ── المزامنة: نهايةُ المسار لا محطّةٌ فيه ───────────────────
+          Expanded(
+            child: Container(
+              height: 1,
+              margin: const EdgeInsets.symmetric(horizontal: AppSpacing.md),
+              color: cs.outline,
+            ),
+          ),
+          Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Container(
+                width: 24,
+                height: 24,
+                alignment: Alignment.center,
+                decoration: BoxDecoration(
+                  shape: BoxShape.circle,
+                  border: Border.all(color: cs.outline),
+                ),
+                child: Text('${steps.length + 1}',
+                    style:
+                        context.text.labelSmall?.copyWith(color: tk.hint)),
+              ),
+              const SizedBox(width: AppSpacing.sm),
+              Text('المزامنة',
+                  style: context.text.labelMedium?.copyWith(color: tk.hint)),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _StepChip extends StatelessWidget {
+  const _StepChip({
+    required this.number,
+    required this.step,
+    required this.active,
+    required this.done,
+    required this.onTap,
+  });
+
+  final int number;
+  final _ReviewStep step;
+  final bool active;
+  final bool done;
+  final VoidCallback? onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = context.colors;
+    final tk = context.tokens;
+
+    final fg = active
+        ? cs.primary
+        : done
+            ? tk.success
+            : tk.hint;
+
+    return Material(
+      color: active ? tk.brandSurface : Colors.transparent,
+      borderRadius: BorderRadius.circular(AppRadius.full),
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(AppRadius.full),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(
+              horizontal: AppSpacing.md, vertical: AppSpacing.xs),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Container(
+                width: 24,
+                height: 24,
+                alignment: Alignment.center,
+                decoration: BoxDecoration(
+                  shape: BoxShape.circle,
+                  color: done || active ? fg : null,
+                  border: done || active ? null : Border.all(color: cs.outline),
+                ),
+                child: done
+                    ? AppIcon(AppIcons.check, size: 12, color: cs.surface)
+                    : Text('$number',
+                        style: context.text.labelSmall?.copyWith(
+                            color: active ? cs.surface : tk.hint)),
+              ),
+              const SizedBox(width: AppSpacing.sm),
+              AppIcon(step.icon, size: 14, color: fg),
+              const SizedBox(width: AppSpacing.xs),
+              Text(step.label,
+                  style: context.text.labelMedium?.copyWith(color: fg)),
+            ],
+          ),
+        ),
       ),
     );
   }

@@ -129,6 +129,7 @@ class ImportRow {
     required this.matchStatus,
     required this.selected,
     this.rawCells = '',
+    this.sourceLabel,
     this.strength,
     this.form,
     this.manufacturer,
@@ -157,6 +158,14 @@ class ImportRow {
   final String rawCells;
 
   final String name;
+
+  /// تسمية الصنف كما وردت في الملف — «كورناسيل بلس (6.25/ 2.5) ملغ».
+  ///
+  /// تُعرَض بدل [name] وحده: الاسم منظَّفٌ من العيار، فثلاثة أصنافٍ
+  /// بعياراتٍ مركّبة تظهر ثلاثة أسطرٍ متطابقة لا يُفرَّق بينها — ويُطلَب
+  /// من صاحبها أن يُقرّ ما لا يُميّزه.
+  final String? sourceLabel;
+
   final double? strength;
   final String? form;
   final String? manufacturer;
@@ -213,6 +222,12 @@ class ImportRow {
   /// صنفٌ حرّ — يُضاف بهويّته لا بمرجعٍ في الكتالوج.
   bool get isCatalogFree => matched == null;
 
+  /// ما يُعرَض للمستخدم — التسمية الأصلية وإلا الاسم المنظَّف.
+  String get displayLabel =>
+      (sourceLabel != null && sourceLabel!.trim().isNotEmpty)
+          ? sourceLabel!.trim()
+          : name;
+
   /// ينقص الصفَّ سعرُه.
   ///
   /// السعر وحده هو الحقل الذي لا افتراض له. الكمية تُقرأ واحداً حين
@@ -256,6 +271,7 @@ class ImportRow {
         id: j['id'] as String,
         rowNumber: (j['rowNumber'] as num?)?.toInt() ?? 0,
         rawCells: j['rawCells'] as String? ?? '',
+        sourceLabel: _str(j['sourceLabel']),
         name: j['name'] as String? ?? '',
         strength: (j['strength'] as num?)?.toDouble(),
         form: _str(j['form']),
@@ -301,6 +317,7 @@ class ImportRow {
         rowNumber: rowNumber,
         rawCells: rawCells,
         name: name,
+        sourceLabel: sourceLabel,
         strength: strength,
         form: form,
         manufacturer: manufacturer,
