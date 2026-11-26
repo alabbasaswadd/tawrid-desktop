@@ -116,9 +116,6 @@ class _WhHomePageState extends ConsumerState<WhHomePage> {
               'تنتقي أصنافاً من «أدويتي» وتضبط سعرها وبونصها ومدّتها '
               'والمناطق التي تراه.',
           icon: AppIcons.plus,
-          // الأوّلية للمستودع الذي لا عرض ساري له: هذه أوّل خطوةٍ
-          // تُدخله السوق، ومساواتُها ببقيّة البطاقات تُخفيها فيه.
-          primary: _activeOffers.isEmpty,
           onTap: () async {
             await context.push(TRoutes.whCreateOffer);
             if (mounted) await _load(silent: true);
@@ -127,10 +124,11 @@ class _WhHomePageState extends ConsumerState<WhHomePage> {
         _HomeAction(
           title: 'استيراد مخزون من ملف',
           description:
-              'ترفع ملف Excel فيقرأ الوكيل أعمدته ويُدخل أصنافه في '
-              '«أدويتي» — ويُنشئ العروض من خصومه وبونصاته.',
+              'ارفع ملف أسعارك ويتولّى الوكيل الباقي: يقرأ الأعمدة، '
+              'ويُدخل الأصنافَ في «أدويتي»، ويُنشئ العروض من خصومها.',
           icon: AppIcons.fileImport,
-          primary: _activeOffers.isEmpty,
+          featured: true,
+          badge: 'الأسرع',
           onTap: () async {
             await context.push(TRoutes.whImportInventory);
             if (mounted) await _load(silent: true);
@@ -341,7 +339,7 @@ class _HomeAction {
     required this.description,
     required this.icon,
     required this.onTap,
-    this.primary = false,
+    this.featured = false,
     this.badge,
   });
 
@@ -353,8 +351,15 @@ class _HomeAction {
   final AppIcons icon;
   final VoidCallback onTap;
 
-  /// إجراءٌ مُقدَّم — يُميَّز بسطحٍ وحدٍّ لا بحجمٍ أكبر.
-  final bool primary;
+  /// الطريق المقصود من هذه الشاشة.
+  ///
+  /// تمييزٌ أقوى من [primary]: حدٌّ بلون العلامة وظلٌّ وشارةٌ تقول
+  /// «الأسرع». وواحدةٌ فقط تحمله — ولو حملته ثلاث لما ميّز شيئاً.
+  ///
+  /// والاستيراد هو هي: مستودعٌ جديد أمامه سبعمئة صنفٍ يُدخلها، وإمّا
+  /// أن يكتبها واحداً واحداً وإمّا أن يرفع ملفه. والثانية هي المقصودة،
+  /// وكانت بطاقةً كبقيّتها لا شيء يدلّ عليها.
+  final bool featured;
 
   /// عددٌ ينتظر قراراً على هذا الطريق («٣ جديد»).
   final String? badge;
@@ -411,11 +416,21 @@ class _ActionCard extends StatelessWidget {
   Widget build(BuildContext context) {
     final cs = context.colors;
     final tk = context.tokens;
-    final primary = action.primary;
+    final featured = action.featured;
+
+    // سطحُ العلامة وحدُّها للمميَّزة وحدها — فلا تنافسها بطاقة.
+    final primary = featured;
 
     return Material(
       color: primary ? tk.brandSurface : cs.surface,
       borderRadius: BorderRadius.circular(AppRadius.lg),
+
+      // ── الظلّ للمميَّزة وحدها ──────────────────────────────────────
+      // يرفعها عن سطح الشبكة قليلاً، فتُلتقَط بالعين قبل أن تُقرأ.
+      // وظلٌّ على الستّ يُلغي معناه.
+      elevation: featured ? 3 : 0,
+      shadowColor: featured ? cs.primary.withValues(alpha: 0.35) : null,
+
       child: InkWell(
         onTap: action.onTap,
         borderRadius: BorderRadius.circular(AppRadius.lg),
@@ -425,7 +440,7 @@ class _ActionCard extends StatelessWidget {
             borderRadius: BorderRadius.circular(AppRadius.lg),
             border: Border.all(
               color: primary ? cs.primary.withValues(alpha: 0.6) : cs.outline,
-              width: primary ? 1.6 : 1,
+              width: featured ? 2 : (primary ? 1.6 : 1),
             ),
           ),
           child: Row(
@@ -437,13 +452,19 @@ class _ActionCard extends StatelessWidget {
                 width: 40,
                 height: 40,
                 decoration: BoxDecoration(
-                  color: primary
-                      ? cs.primary.withValues(alpha: 0.14)
-                      : cs.surfaceContainerHighest,
+                  color: featured
+                      ? cs.primary
+                      : primary
+                          ? cs.primary.withValues(alpha: 0.14)
+                          : cs.surfaceContainerHighest,
                   borderRadius: BorderRadius.circular(AppRadius.md),
                 ),
                 alignment: Alignment.center,
-                child: AppIcon(action.icon, size: 18, color: cs.primary),
+                child: AppIcon(action.icon,
+                    size: featured ? 20 : 18,
+                    // الأيقونة على سطحٍ مُصمَت في المميَّزة: نقيضُ لونٍ
+                    // كامل يُمسَك بالعين من طرف الشاشة.
+                    color: featured ? cs.surface : cs.primary),
               ),
               const SizedBox(width: AppSpacing.md),
               Expanded(

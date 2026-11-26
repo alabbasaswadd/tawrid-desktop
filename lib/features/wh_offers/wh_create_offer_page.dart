@@ -451,21 +451,33 @@ class _WhCreateOfferPageState extends ConsumerState<WhCreateOfferPage> {
 
             const SizedBox(height: AppSpacing.lg),
             Row(
-              mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: [
-                Text('الأصناف', style: context.text.titleLarge),
-                TextButton.icon(
+                Text(
+                  _items.isEmpty
+                      ? 'أصناف العرض'
+                      : 'أصناف العرض (${_items.length})',
+                  style: context.text.titleLarge,
+                ),
+                const SizedBox(width: AppSpacing.md),
+
+                // ── الزرّ بارزٌ لا نصٌّ باهت ────────────────────────────
+                // هو الفعل الذي لا يقوم العرض بدونه: عرضٌ بلا أصناف
+                // يرفضه الخادم. وكان `TextButton` في طرف السطر يُقرأ
+                // رابطاً ثانوياً.
+                FilledButton.icon(
                   onPressed: _addMedicine,
-                  icon: const Icon(Icons.add),
-                  label: const Text('أضف دواء'),
+                  icon: const Icon(Icons.add, size: 18),
+                  label: Text(_items.isEmpty ? 'اختر الأصناف' : 'أضف المزيد'),
                 ),
               ],
             ),
+
             // الرقم المقترح ليس التزاماً: نقول من أين جاء حتى يعرف المستودع
             // ما الذي يعدّله حين يعدّله.
             if (_items.isNotEmpty)
               Padding(
-                padding: const EdgeInsets.only(bottom: AppSpacing.sm, right: 2),
+                padding: const EdgeInsets.only(
+                    top: AppSpacing.xs, bottom: AppSpacing.sm, right: 2),
                 child: Text(
                   'سعر الوحدة مقترح من سعر بيعك للصنف (٧٤٪ من سعر المستهلك '
                   'ما لم تحدّد سعراً) — عدّله كما تشاء.',
@@ -473,10 +485,45 @@ class _WhCreateOfferPageState extends ConsumerState<WhCreateOfferPage> {
                       ?.copyWith(color: context.tokens.hint),
                 ),
               ),
+
             if (_items.isEmpty)
-              const Padding(
-                padding: EdgeInsets.symmetric(vertical: AppSpacing.md),
-                child: EmptyState(message: 'لم تُضف أصناف بعد', icon: Icons.medication_outlined),
+              // ── حالةٌ فارغة تدعو إلى الفعل لا تصفه ────────────────────
+              // «لم تُضف أصناف بعد» تقول ما لم يحدث ولا تقول ما يُفعَل.
+              // وهذه تقول من أين تأتي الأصناف وكيف تُنتقى.
+              Padding(
+                padding: const EdgeInsets.only(top: AppSpacing.sm),
+                child: InkWell(
+                  onTap: _addMedicine,
+                  borderRadius: BorderRadius.circular(AppRadius.lg),
+                  child: Container(
+                    width: double.infinity,
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: AppSpacing.lg, vertical: AppSpacing.x2l),
+                    decoration: BoxDecoration(
+                      color: context.tokens.brandSurface,
+                      borderRadius: BorderRadius.circular(AppRadius.lg),
+                      border: Border.all(
+                        color: context.colors.primary.withValues(alpha: 0.3),
+                      ),
+                    ),
+                    child: Column(
+                      children: [
+                        Icon(Icons.medication_outlined,
+                            size: 32, color: context.colors.primary),
+                        const SizedBox(height: AppSpacing.sm),
+                        Text('انتقِ أصنافك من «أدويتي»',
+                            style: context.text.titleSmall),
+                        const SizedBox(height: AppSpacing.xs),
+                        Text(
+                          'تُحدّد عدّةً دفعةً واحدة، ثم تضبط سعر كلٍّ وبونصه.',
+                          style: context.text.bodySmall
+                              ?.copyWith(color: context.tokens.hint),
+                          textAlign: TextAlign.center,
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
               )
             else
               ..._items.map((draft) => _OfferItemCard(

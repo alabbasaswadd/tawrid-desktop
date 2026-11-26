@@ -50,6 +50,44 @@ class ExportColumn<T> {
   }
 }
 
+/// اسمُ ملفٍ يقبله نظام الملفات.
+///
+/// ── لماذا؟ ────────────────────────────────────────────────────────────
+/// أسماء التصدير تُبنى من بيانات المستخدم: «عرض ابن حيان 27/11». والشرطة
+/// المائلة فاصلُ مسارٍ في ويندوز ولينكس معاً، فيُفهَم الاسم مجلّداً لا
+/// ملفاً — ويخرج الحوار برسالة:
+///
+///     يتعذر على Windows العثور على C:\…\Temp\عرض ابن حيان 27
+///
+/// ورآه المستخدم على عرضٍ عنوانه تاريخُ إنشائه — وهو العنوان الافتراضي
+/// لكل عرضٍ يُنشئه الاستيراد. أي أن التصدير كان يسقط على أكثر الحالات
+/// شيوعاً لا على شاذّة.
+///
+/// والمحارف المرفوضة في ويندوز تسعة، وكلّها تُبدَّل بشرطةٍ عادية لا
+/// تُحذَف — فيبقى «27-11» مقروءاً.
+String safeFileName(String raw) {
+  var name = raw
+      .replaceAll(_forbidden, '-')
+
+      // محارف التحكّم تُطرح: لا تُرى ولا يقبلها نظام ملفات.
+      .replaceAll(_control, '')
+      .trim();
+
+  // النقطة أو المسافة في آخر الاسم تُحذَف في ويندوز صمتاً، فيلتصق
+  // الامتداد بالاسم.
+  name = name.replaceAll(_trailingDots, '');
+
+  if (name.isEmpty) name = 'تصدير';
+
+  // السقف ١٢٠ لا ٢٥٥: المسار كلّه محدود والاسم جزءٌ منه — ومجلّدٌ عميق
+  // مع اسمٍ طويل يتجاوز الحدّ فيُرفَض الحفظ.
+  return name.length <= 120 ? name : name.substring(0, 120);
+}
+
+final _forbidden = RegExp(r'[\\/:*?"<>|]');
+final _control = RegExp(r'[\x00-\x1F]');
+final _trailingDots = RegExp(r'[. ]+$');
+
 /// يحفظ بايتات في ملفٍ يختار المستخدم مكانه.
 ///
 /// يُعيد المسار، أو `null` إن تراجع المستخدم.
@@ -63,7 +101,7 @@ Future<String?> saveBytes({
 }) async {
   final path = await FilePicker.platform.saveFile(
     dialogTitle: 'احفظ الملف',
-    fileName: '$fileName.$extension',
+    fileName: '${safeFileName(fileName)}.$extension',
     type: FileType.custom,
     allowedExtensions: [extension],
 
@@ -206,7 +244,8 @@ Future<void> exportToPdf<T>({
 
   // `sharePdf` لا `saveBytes`: يفتح حوار النظام الذي يطبع ويحفظ ويُرسل
   // معاً — وهي الأفعال الثلاثة التي تُطلَب من تقرير.
-  await Printing.sharePdf(bytes: bytes, filename: '$fileName.pdf');
+  await Printing.sharePdf(
+      bytes: bytes, filename: '${safeFileName(fileName)}.pdf');
 }
 
 // ─────────────────────────────────────────────────────────────────────

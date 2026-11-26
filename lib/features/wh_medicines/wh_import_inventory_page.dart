@@ -16,6 +16,8 @@ import 'package:tawrid_app/repositories/warehouse_service_area_repository.dart';
 import 'package:tawrid_app/shared/ui/ui.dart';
 import 'package:tawrid_app/shared/utils/money.dart';
 import 'package:tawrid_app/shared/utils/export.dart';
+import 'package:desktop_drop/desktop_drop.dart';
+import 'package:cross_file/cross_file.dart' show XFile;
 
 /// استيراد المخزون من ملف Excel بمساعدة وكيل الـ AI.
 ///
@@ -275,11 +277,15 @@ class _WhImportInventoryPageState extends ConsumerState<WhImportInventoryPage> {
   }
 
   // ── الرفع ─────────────────────────────────────────────────────────────
+  /// الصيغ التي يقرؤها الخادم.
+  ///
+  /// xls القديم صيغةٌ ثنائية مختلفة لا يقرؤها — يُحفَظ xlsx أولاً.
+  static const _accepted = {'xlsx', 'csv'};
+
   Future<void> _pick() async {
     final picked = await FilePicker.platform.pickFiles(
       type: FileType.custom,
-      // xls القديم صيغةٌ ثنائية مختلفة لا يقرؤها الخادم — يُحفَظ xlsx أولاً.
-      allowedExtensions: const ['xlsx', 'csv'],
+      allowedExtensions: _accepted.toList(),
       dialogTitle: 'اختر ملف Excel',
       withData: true,
     );
@@ -292,6 +298,46 @@ class _WhImportInventoryPageState extends ConsumerState<WhImportInventoryPage> {
       return;
     }
 
+    await _upload(bytes, file.name);
+  }
+
+  /// ملفٌ أُفلِت على الشاشة.
+  ///
+  /// السحبُ والإفلات ليس زينةً هنا: صاحب المستودع يفتح ملف أسعاره في
+  /// Excel، فسحبُه منه إلى التطبيق خطوةٌ واحدة بدل ثلاث — فتحُ منتقٍ،
+  /// وتنقّلٌ في المجلّدات، وبحثٌ عن اسمٍ يتذكّره نصفه.
+  Future<void> _dropped(List<XFile> files) async {
+    if (files.isEmpty) return;
+
+    // ── ملفٌّ واحد لا عدّة ────────────────────────────────────────────
+    // المهمة في الخادم مهمةُ ملفٍ واحد، وقبولُ ثلاثةٍ ثم معالجة أولها
+    // صمتاً يجعل صاحبها يظنّ أن الثلاثة دخلت مخزونه.
+    if (files.length > 1) {
+      setState(() => _error = 'اسحب ملفاً واحداً — المزامنة لملفٍ في المرّة');
+      return;
+    }
+
+    final file = files.first;
+    final ext = file.name.split('.').last.toLowerCase();
+
+    if (!_accepted.contains(ext)) {
+      setState(() => _error =
+          'صيغة غير مدعومة (.$ext) — المقبول xlsx و csv. وملفات xls '
+          'القديمة تُحفَظ xlsx من Excel أولاً.');
+      return;
+    }
+
+    try {
+      await _upload(await file.readAsBytes(), file.name);
+    } on Object catch (e) {
+      if (mounted) {
+        setState(() => _error = 'تعذّرت قراءة الملف: ${ApiException.from(e).message}');
+      }
+    }
+  }
+
+  /// يرفع بايتات ملفٍ ويبدأ المتابعة — مشتركٌ بين المنتقي والإفلات.
+  Future<void> _upload(List<int> bytes, String fileName) async {
     setState(() {
       _error = null;
       _notice = null;
@@ -314,7 +360,7 @@ class _WhImportInventoryPageState extends ConsumerState<WhImportInventoryPage> {
     try {
       final started = await ref.read(inventoryImportRepositoryProvider).start(
             bytes: bytes,
-            fileName: file.name,
+            fileName: fileName,
             skipCatalogMatching: _skipCatalog,
             onProgress: (sent, total) {
               if (!mounted || total <= 0) return;
@@ -1107,6 +1153,7 @@ class _WhImportInventoryPageState extends ConsumerState<WhImportInventoryPage> {
     } else {
       body = _IdleView(
         onPick: _pick,
+        onDropped: _dropped,
         error: _error,
         notice: _notice,
         skipCatalog: _skipCatalog,
@@ -1154,6 +1201,7 @@ class _WhImportInventoryPageState extends ConsumerState<WhImportInventoryPage> {
 class _IdleView extends StatelessWidget {
   const _IdleView({
     required this.onPick,
+    required this.onDropped,
     required this.skipCatalog,
     required this.showModeChooser,
     required this.onModeChanged,
@@ -1162,6 +1210,9 @@ class _IdleView extends StatelessWidget {
   });
 
   final VoidCallback onPick;
+
+  /// ملفٌ أُفلِت على الشاشة.
+  final ValueChanged<List<XFile>> onDropped;
 
   /// الوضع المختار: تخطّي مطابقة الكتالوج الوطني.
   final bool skipCatalog;
@@ -1179,7 +1230,6 @@ class _IdleView extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final cs = context.colors;
     final tk = context.tokens;
 
     return SingleChildScrollView(
@@ -1187,37 +1237,20 @@ class _IdleView extends StatelessWidget {
           AppSpacing.page, AppSpacing.x2l, AppSpacing.page, AppSpacing.x3l),
       child: Center(
         child: ConstrainedBox(
-          // عريضةٌ تسع بطاقتَي الوضع جنباً إلى جنب: كانت ٤٨٠ فتنزل
-          // الواحدة تحت الأخرى، فتُقرآن تِباعاً لا مقارنةً — وهما خياران
-          // يُقارَنان.
-          constraints: const BoxConstraints(maxWidth: 920),
+          constraints: const BoxConstraints(maxWidth: 840),
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              _BreathingIcon(
-                icon: AppIcons.clipboardList,
-                background: tk.brandSurface,
-                color: cs.primary,
-              ),
-              const SizedBox(height: AppSpacing.lg),
               Text('استيراد قائمة الأدوية',
                   style: context.text.titleLarge, textAlign: TextAlign.center),
-              const SizedBox(height: AppSpacing.sm),
+              const SizedBox(height: AppSpacing.xs),
               Text(
-                'ارفع ملف Excel، ويقرأ وكيل الـ AI أعمدته ويفصل العيار عن '
-                'الاسم — ولا يُضاف شيء لمخزونك قبل مراجعتك',
+                'ارفع ملف أسعارك كما هو — لا قالب ولا ترتيب أعمدة',
                 style: context.text.bodyMedium?.copyWith(color: tk.hint),
                 textAlign: TextAlign.center,
               ),
               const SizedBox(height: AppSpacing.xl),
 
-              // ── الوضع يُختار قبل الرفع ───────────────────────────────
-              // لا بعده: المطابقة مرحلةٌ تجري في الخادم أثناء التحليل،
-              // فلا تُلغى بأثرٍ رجعي. وعرضُها خيارين صريحين خيرٌ من
-              // إعدادٍ مخبوء — الفرق بينهما في الزمن والنتيجة كبير.
-              //
-              // ومخفيٌّ الآن: الوضع واحدٌ مثبَّت، وسؤالٌ بخيارٍ واحد
-              // ليس سؤالاً.
               if (showModeChooser) ...[
                 _ModeChooser(
                     skipCatalog: skipCatalog, onChanged: onModeChanged),
@@ -1242,40 +1275,308 @@ class _IdleView extends StatelessWidget {
                 const SizedBox(height: AppSpacing.lg),
               ],
 
-              AppButton(
-                label: 'اختر ملف Excel',
-                appIcon: AppIcons.fileText,
-                onPressed: onPick,
-              ),
-              const SizedBox(height: AppSpacing.x2l),
+              // ── منطقة الإفلات هي الشاشة لا زرٌّ فيها ──────────────────
+              // كانت زرّاً صغيراً وسط نصوص، والمستخدم يبحث عنه. وهذه
+              // تملأ ما أمامه وتقول فعلها بنفسها: مستطيلٌ متقطّع الحدّ
+              // لا يعني في كل الواجهات إلا «أفلِت هنا».
+              _DropZone(onPick: onPick, onDropped: onDropped),
 
-              AppCard(
-                padding: const EdgeInsets.symmetric(
-                    horizontal: AppSpacing.lg, vertical: AppSpacing.md),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Row(
-                      children: [
-                        AppIcon(AppIcons.info, size: 16, color: cs.primary),
-                        const SizedBox(width: AppSpacing.sm),
-                        Text('كيف يعمل', style: context.text.labelLarge),
-                      ],
+              const SizedBox(height: AppSpacing.xl),
+
+              // ── ما يفعله الوكيل، في ثلاث ───────────────────────────────
+              // كانت ستّ عباراتٍ بعلامات صحّ: قائمةٌ تُقرأ كشروطٍ لا
+              // كقدرات. وثلاثٌ ببطاقاتها تُمسَك بنظرة.
+              LayoutBuilder(
+                builder: (context, constraints) {
+                  final cols = columnsFor(constraints.maxWidth,
+                      minTile: 240, max: 3);
+
+                  const abilities = [
+                    (
+                      icon: AppIcons.clipboardList,
+                      title: 'يقرأ أعمدتك',
+                      body: 'أيّاً كان ترتيبها وتسميتها — ولو بلا ترويسة.',
                     ),
-                    const SizedBox(height: AppSpacing.sm),
-                    const _Hint('لا يلزم قالب معيّن — الوكيل يستنتج الأعمدة'),
-                    const _Hint('يفصل العيار والشكل الدوائي عن اسم الدواء'),
-                    const _Hint('يقرأ الخصم والبونص والشركة فيُنشئ العروض'),
-                    const _Hint(
-                        'يدخل مخزونك باسمه وعياره — بلا ربطٍ بالنشرة الوطنية'),
-                    const _Hint('تراجع النتيجة قبل أن يُكتب شيء في مخزونك'),
-                    const _Hint('الصيغ المدعومة: xlsx و csv'),
-                  ],
-                ),
+                    (
+                      icon: AppIcons.pill,
+                      title: 'يفصل الاسم',
+                      body: 'يُخرج العيار والشكل والتعبئة من اسم الدواء.',
+                    ),
+                    (
+                      icon: AppIcons.gift,
+                      title: 'يفهم عروضك',
+                      body: 'يقرأ «١٠+١» و«خصم ١٥٪» فيُنشئ منها العروض.',
+                    ),
+                  ];
+
+                  return Column(
+                    children: [
+                      for (var i = 0; i < abilities.length; i += cols) ...[
+                        if (i > 0) const SizedBox(height: AppSpacing.md),
+                        IntrinsicHeight(
+                          child: Row(
+                            crossAxisAlignment: CrossAxisAlignment.stretch,
+                            children: [
+                              for (var j = i; j < i + cols; j++) ...[
+                                if (j > i)
+                                  const SizedBox(width: AppSpacing.md),
+                                Expanded(
+                                  child: j < abilities.length
+                                      ? _AbilityCard(
+                                          icon: abilities[j].icon,
+                                          title: abilities[j].title,
+                                          body: abilities[j].body,
+                                        )
+                                      : const SizedBox.shrink(),
+                                ),
+                              ],
+                            ],
+                          ),
+                        ),
+                      ],
+                    ],
+                  );
+                },
+              ),
+
+              const SizedBox(height: AppSpacing.lg),
+              Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  AppIcon(AppIcons.check, size: 13, color: tk.success),
+                  const SizedBox(width: AppSpacing.xs),
+                  Text(
+                    'لا يُكتب شيء في مخزونك قبل أن تراجع وتوافق',
+                    style:
+                        context.text.labelSmall?.copyWith(color: tk.success),
+                  ),
+                ],
               ),
             ],
           ),
         ),
+      ),
+    );
+  }
+}
+
+/// منطقة إفلات الملف — هي الشاشة لا زرٌّ فيها.
+class _DropZone extends StatefulWidget {
+  const _DropZone({required this.onPick, required this.onDropped});
+
+  final VoidCallback onPick;
+  final ValueChanged<List<XFile>> onDropped;
+
+  @override
+  State<_DropZone> createState() => _DropZoneState();
+}
+
+class _DropZoneState extends State<_DropZone> {
+  bool _hovering = false;
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = context.colors;
+    final tk = context.tokens;
+
+    return DropTarget(
+      onDragEntered: (_) => setState(() => _hovering = true),
+      onDragExited: (_) => setState(() => _hovering = false),
+      onDragDone: (detail) {
+        setState(() => _hovering = false);
+        widget.onDropped(detail.files);
+      },
+      child: InkWell(
+        onTap: widget.onPick,
+        borderRadius: BorderRadius.circular(AppRadius.lg),
+        child: AnimatedContainer(
+          duration: const Duration(milliseconds: 160),
+          width: double.infinity,
+          padding: const EdgeInsets.symmetric(
+              horizontal: AppSpacing.xl, vertical: AppSpacing.x3l),
+          decoration: BoxDecoration(
+            color: _hovering ? tk.brandSurface : cs.surface,
+            borderRadius: BorderRadius.circular(AppRadius.lg),
+          ),
+          // الحدّ المتقطّع يُرسَم لا يُستورَد: مكوّنٌ من أجل إطارٍ
+          // واحد ثِقلٌ لا يُدفَع.
+          foregroundDecoration: _DashedBorder(
+            color: _hovering
+                ? cs.primary
+                : cs.outline.withValues(alpha: 0.9),
+            width: _hovering ? 2 : 1.4,
+          ),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              AnimatedScale(
+                scale: _hovering ? 1.08 : 1,
+                duration: const Duration(milliseconds: 160),
+                child: Container(
+                  width: 64,
+                  height: 64,
+                  decoration: BoxDecoration(
+                    color: _hovering
+                        ? cs.primary
+                        : cs.primary.withValues(alpha: 0.10),
+                    shape: BoxShape.circle,
+                  ),
+                  alignment: Alignment.center,
+                  child: AppIcon(
+                    AppIcons.fileImport,
+                    size: 26,
+                    color: _hovering ? cs.surface : cs.primary,
+                  ),
+                ),
+              ),
+              const SizedBox(height: AppSpacing.lg),
+              Text(
+                _hovering ? 'أفلِت الملف هنا' : 'اسحب ملفك إلى هنا',
+                style: context.text.titleMedium?.copyWith(
+                  color: _hovering ? cs.primary : null,
+                ),
+              ),
+              const SizedBox(height: AppSpacing.xs),
+              Text(
+                'أو انقر لاختياره من جهازك',
+                style: context.text.bodySmall?.copyWith(color: tk.hint),
+              ),
+              const SizedBox(height: AppSpacing.lg),
+
+              // الصيغ شارةٌ لا سطر نصّ: معلومةٌ تُلمَح ولا تُقرأ.
+              Wrap(
+                spacing: AppSpacing.xs,
+                children: const [
+                  _FormatChip('xlsx'),
+                  _FormatChip('csv'),
+                ],
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _FormatChip extends StatelessWidget {
+  const _FormatChip(this.label);
+  final String label;
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = context.colors;
+
+    return Container(
+      padding:
+          const EdgeInsets.symmetric(horizontal: AppSpacing.sm, vertical: 3),
+      decoration: BoxDecoration(
+        color: cs.surfaceContainerHighest,
+        borderRadius: BorderRadius.circular(AppRadius.full),
+      ),
+      child: Text(label,
+          style: context.text.labelSmall?.copyWith(color: context.tokens.hint)),
+    );
+  }
+}
+
+/// حدٌّ متقطّع — يُرسَم بـ`Decoration` لا بمكوّنٍ مستورَد.
+class _DashedBorder extends Decoration {
+  const _DashedBorder({required this.color, required this.width});
+
+  final Color color;
+  final double width;
+
+  @override
+  BoxPainter createBoxPainter([VoidCallback? onChanged]) =>
+      _DashedPainter(color: color, width: width);
+}
+
+class _DashedPainter extends BoxPainter {
+  _DashedPainter({required this.color, required this.width});
+
+  final Color color;
+  final double width;
+
+  @override
+  void paint(Canvas canvas, Offset offset, ImageConfiguration cfg) {
+    final size = cfg.size;
+    if (size == null) return;
+
+    final rect = offset & size;
+    final rrect = RRect.fromRectAndRadius(
+      rect.deflate(width / 2),
+      const Radius.circular(AppRadius.lg),
+    );
+
+    final paint = Paint()
+      ..color = color
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = width;
+
+    // الشرطة ستّة والفجوة أربعة: أقصر منها يبدو خطاً متّصلاً، وأطول
+    // منها يتفكّك عند الزوايا.
+    const dash = 6.0;
+    const gap = 4.0;
+
+    for (final metric in (Path()..addRRect(rrect)).computeMetrics()) {
+      var distance = 0.0;
+      while (distance < metric.length) {
+        final next = distance + dash;
+        canvas.drawPath(
+          metric.extractPath(distance, next.clamp(0, metric.length)),
+          paint,
+        );
+        distance = next + gap;
+      }
+    }
+  }
+}
+
+/// قدرةٌ من قدرات الوكيل — بطاقةٌ صغيرة.
+class _AbilityCard extends StatelessWidget {
+  const _AbilityCard({
+    required this.icon,
+    required this.title,
+    required this.body,
+  });
+
+  final AppIcons icon;
+  final String title;
+  final String body;
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = context.colors;
+    final tk = context.tokens;
+
+    return Container(
+      padding: const EdgeInsets.all(AppSpacing.md),
+      decoration: BoxDecoration(
+        color: cs.surface,
+        borderRadius: BorderRadius.circular(AppRadius.md),
+        border: Border.all(color: cs.outline),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Row(
+            children: [
+              AppIcon(icon, size: 15, color: cs.primary),
+              const SizedBox(width: AppSpacing.sm),
+              Expanded(
+                child: Text(title,
+                    style: context.text.labelMedium,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis),
+              ),
+            ],
+          ),
+          const SizedBox(height: AppSpacing.xs),
+          Text(body,
+              style: context.text.labelSmall?.copyWith(color: tk.hint)),
+        ],
       ),
     );
   }
@@ -1426,33 +1727,6 @@ class _ModeCard extends StatelessWidget {
   }
 }
 
-class _Hint extends StatelessWidget {
-  const _Hint(this.text);
-  final String text;
-
-  @override
-  Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.only(top: AppSpacing.xs),
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Padding(
-            padding: const EdgeInsets.only(top: 3),
-            child:
-                AppIcon(AppIcons.check, size: 12, color: context.tokens.hint),
-          ),
-          const SizedBox(width: AppSpacing.sm),
-          Expanded(
-            child: Text(text,
-                style: context.text.bodySmall
-                    ?.copyWith(color: context.tokens.hint)),
-          ),
-        ],
-      ),
-    );
-  }
-}
 
 /// أيقونة تتنفّس — حركةٌ هادئة تُشعِر أن الشاشة حيّة بلا أن تُلفت.
 class _BreathingIcon extends StatefulWidget {
@@ -1589,13 +1863,12 @@ class _WorkingView extends StatelessWidget {
                 ),
               ],
 
-              const SizedBox(height: AppSpacing.x2l),
-              _PhaseStepper(current: phase),
-              const SizedBox(height: AppSpacing.x2l),
+              const SizedBox(height: AppSpacing.lg),
 
-              // عدّاد الزمن والمتبقّي: انتظارٌ طويل مع رقمٍ يتحرّك انتظار،
-              // وبلا رقمٍ يتحرّك يبدو عُطلاً — والمستخدم حينها يعيد الرفع
-              // فتتراكم مهام متوازية على الخادم بلا داعٍ.
+              // ── سطرٌ واحد يحمل الزمن والحجم ──────────────────────────
+              // كانا سطرين متتاليين — «مضى ٠:٣٥» ثم «٧٦٣ صفاً في الملف»
+              // — وكلاهما رقمٌ صغير. وجمعُهما يُقصّر الشاشة ويُقرآن معاً:
+              // «هذا حجم العمل، وهذا ما مضى منه».
               if (startedAt != null)
                 _ElapsedLine(
                   startedAt: startedAt!,
@@ -1603,14 +1876,15 @@ class _WorkingView extends StatelessWidget {
                   total: totalRows,
                 ),
 
-              if (totalRows > 0) ...[
-                const SizedBox(height: AppSpacing.xs),
-                Text(
-                  '$totalRows صفاً في الملف',
-                  style: context.text.labelSmall?.copyWith(color: tk.hint),
-                  textAlign: TextAlign.center,
-                ),
-              ],
+              const SizedBox(height: AppSpacing.x2l),
+              _PhaseStepper(current: phase),
+
+              // ── ما يفعله الوكيل الآن، بعبارةٍ تتبدّل ─────────────────
+              // الانتظار قد يطول دقائق، والسطر الواحد الجامد يجعله يبدو
+              // تعلّقاً. والعبارات تُعلّم صاحبه ما يجري وما يقدر عليه
+              // الوكيل — فيخرج من الانتظار عارفاً بأداته.
+              const SizedBox(height: AppSpacing.xl),
+              _RotatingTip(phase: phase),
 
               // ما تعرّف عليه الوكيل — يظهر أولاً بأول لا بعد الانتهاء.
               if (preview.isNotEmpty) ...[
@@ -1659,6 +1933,123 @@ class _WorkingView extends StatelessWidget {
 }
 
 /// «مضى ٥:٢٣ · يتبقّى ~١٢ دقيقة» — يتجدّد كل ثانية.
+
+/// عبارةٌ تتبدّل كل بضع ثوانٍ تشرح ما يجري وما يقدر عليه الوكيل.
+///
+/// ── لماذا؟ ──────────────────────────────────────────────────────────────
+/// الانتظار قد يطول دقائق على ملفٍ بسبعمئة صنف. وسطرٌ واحد جامد طوال
+/// ذلك يجعل الشاشة تبدو متعلّقة، فيُعيد صاحبها الرفع — فتتراكم مهامٌ
+/// متوازية على الخادم.
+///
+/// والعبارات ليست تسليةً: كلٌّ منها تقول شيئاً لا يعرفه عن أداته —
+/// أنها تقرأ أيّ ترتيبٍ للأعمدة، وأنها تفصل العيار، وأنها تفهم «١٠+١».
+/// فيخرج من الانتظار عارفاً بما بين يديه.
+class _RotatingTip extends StatefulWidget {
+  const _RotatingTip({required this.phase});
+
+  final ImportStatus phase;
+
+  @override
+  State<_RotatingTip> createState() => _RotatingTipState();
+}
+
+class _RotatingTipState extends State<_RotatingTip> {
+  Timer? _timer;
+  int _index = 0;
+
+  /// ما يُقال أثناء قراءة الملف.
+  ///
+  /// بصيغة «يفعل» لا «يستطيع»: المستخدم ينتظر الآن، والحاضر يُطمئن
+  /// أكثر من إعلان القدرات.
+  static const _analyzing = [
+    'يقرأ أعمدة ملفك — أيّاً كان ترتيبها وتسميتها.',
+    'يفصل العيار والشكل الدوائي عن اسم الدواء.',
+    'يقرأ الخصم والبونص: «١٠+١» و«خصم ١٥٪» يفهمهما كما كتبتهما.',
+    'يتعرّف على الشركة من عمودها أو من سطرٍ فوق أصنافها.',
+    'يتجاهل الترويسات والمجاميع والصفوف الفارغة.',
+  ];
+
+  /// وأثناء مقارنة الملف بالمخزون.
+  static const _matching = [
+    'يقارن ما في ملفك بما في «أدويتي» عندك.',
+    'الصنف الموجود يُحدَّث سعره، والجديد يُضاف — ولا شيء يُكرَّر.',
+    'ما لم يتغيّر سعره يُترَك كما هو.',
+  ];
+
+  /// وأثناء الكتابة في المخزون.
+  static const _applying = [
+    'يكتب ما اخترته في «أدويتي».',
+    'ثم يُنشئ العروض من الأصناف التي عليها خصمٌ أو بونص.',
+  ];
+
+  List<String> get _tips => switch (widget.phase) {
+        ImportStatus.matching => _matching,
+        ImportStatus.applying => _applying,
+        _ => _analyzing,
+      };
+
+  @override
+  void initState() {
+    super.initState();
+
+    // خمسُ ثوانٍ: أقلّ منها يُلاحَق بالعين ولا يُقرأ، وأكثر منها يعود
+    // السطرُ جامداً.
+    _timer = Timer.periodic(const Duration(seconds: 5), (_) {
+      if (mounted) setState(() => _index++);
+    });
+  }
+
+  @override
+  void didUpdateWidget(covariant _RotatingTip old) {
+    super.didUpdateWidget(old);
+
+    // المرحلة تبدّلت: يُبدأ من أوّل عباراتها لا من موضعٍ في القائمة
+    // السابقة — وإلا قُرئ «يكتب في أدويتي» والملف ما زال يُقرأ.
+    if (old.phase != widget.phase) _index = 0;
+  }
+
+  @override
+  void dispose() {
+    _timer?.cancel();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = context.colors;
+    final tk = context.tokens;
+
+    final tips = _tips;
+    final tip = tips[_index % tips.length];
+
+    return Container(
+      padding: const EdgeInsets.symmetric(
+          horizontal: AppSpacing.lg, vertical: AppSpacing.md),
+      decoration: BoxDecoration(
+        color: tk.brandSurface,
+        borderRadius: BorderRadius.circular(AppRadius.md),
+      ),
+      child: Row(
+        children: [
+          AppIcon(AppIcons.info, size: 15, color: cs.primary),
+          const SizedBox(width: AppSpacing.sm),
+          Expanded(
+            // تبدّلٌ بتلاشٍ لا بقفزة: القفز بين جملتين كل خمس ثوانٍ
+            // يجعل الشاشة تبدو مضطربة.
+            child: AnimatedSwitcher(
+              duration: const Duration(milliseconds: 400),
+              child: Text(
+                tip,
+                key: ValueKey(tip),
+                style: context.text.bodySmall?.copyWith(color: cs.primary),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
 class _ElapsedLine extends StatefulWidget {
   const _ElapsedLine({
     required this.startedAt,
@@ -2674,7 +3065,19 @@ enum _ReviewStep {
 }
 
 class _ReviewViewState extends State<_ReviewView> {
-  _RowFilter _filter = _RowFilter.all;
+  /// ── «ما اختلف» افتراضاً لا «الكل» ──────────────────────────────────
+  /// الملف فيه سبعمئة صنف، وقد لا يختلف منه إلا عشرون. وعرضُ السبعمئة
+  /// ابتداءً يُلزم صاحبها بالبحث بعينه عمّا تغيّر — وهو السؤال الوحيد
+  /// الذي جاء من أجله.
+  ///
+  /// و«الكل» على بُعد نقرة لمن أراد المراجعة الكاملة.
+  _RowFilter _filter = _RowFilter.changed;
+
+  /// هل ضُبط الافتراض على هذه القائمة؟
+  ///
+  /// يُضبط مرّةً لا في كل إعادة بناء: المستخدم الذي اختار «الكل» لا
+  /// يصحّ أن يُعاد إلى «ما اختلف» عند أول تبديل تحديد.
+  bool _seededFilter = false;
   _ReviewStep _step = _ReviewStep.items;
 
   @override
@@ -2726,6 +3129,13 @@ class _ReviewViewState extends State<_ReviewView> {
       for (var i = 0; i < rows.length; i++)
         if (_filter.matches(rows[i])) i,
     ];
+
+    // ملفٌ لا جديد فيه يُعرَض كاملاً: تصنيفٌ فارغ يبدو عطباً، و«لا
+    // جديد» تقولها اللافتة أعلاه صراحةً.
+    if (!_seededFilter) {
+      _seededFilter = true;
+      if (changed == 0) _filter = _RowFilter.all;
+    }
 
     // لا مرحلةَ عروضٍ حين لا عروض: مرحلةٌ فارغة تُرى خطوةً ضائعة.
     final hasOffers = widget.offerCompanies > 0;
@@ -2863,41 +3273,44 @@ class _ReviewViewState extends State<_ReviewView> {
                   appIcon: AppIcons.pill,
                 )
               else if (grouped)
+                // بنود العرض وحدها تبقى مجموعةً بالشركة: المستخدم يرى
+                // العرض الذي سيُنشأ كما سيُنشأ.
                 for (final group in _groupByCompany(rows, visible)) ...[
                   _CompanyHeader(
                     company: group.key,
                     count: group.value.length,
                   ),
-                  for (final i in group.value)
-                    Padding(
-                      key: ValueKey(rows[i].id),
-                      padding: const EdgeInsets.only(bottom: AppSpacing.sm),
-                      child: _MatchRow(
-                        row: rows[i],
-                        onToggle: () => widget.onToggle(i),
-                        onPickCandidate: () => widget.onPickCandidate(i),
-                        onEditPrice: () => widget.onEditPrice(i),
-                      ),
-                    ),
-                ]
-              else
-                for (final i in visible)
-                  Padding(
-                    key: ValueKey(rows[i].id),
-                    padding: const EdgeInsets.only(bottom: AppSpacing.sm),
-                    child: _Appear(
-                      // ترتيب الظهور من موضع الصفّ في المعروض لا في
-                      // القائمة الكاملة، وإلا تأخّر أولُ سطرٍ بعد الفلترة
-                      // بمقدار فهرسه الأصلي فبدا وكأن شيئاً لا يحدث.
-                      index: visible.indexOf(i),
-                      child: _MatchRow(
-                        row: rows[i],
-                        onToggle: () => widget.onToggle(i),
-                        onPickCandidate: () => widget.onPickCandidate(i),
-                        onEditPrice: () => widget.onEditPrice(i),
-                      ),
-                    ),
+                  _MatchHeader(
+                    allSelected: group.value.every((i) => rows[i].selected),
+                    onToggleAll: widget.onToggleAll,
                   ),
+                  for (var k = 0; k < group.value.length; k++)
+                    _MatchTableRow(
+                      key: ValueKey(rows[group.value[k]].id),
+                      index: k,
+                      row: rows[group.value[k]],
+                      onToggle: () => widget.onToggle(group.value[k]),
+                      onPickCandidate: () =>
+                          widget.onPickCandidate(group.value[k]),
+                      onEditPrice: () => widget.onEditPrice(group.value[k]),
+                    ),
+                  const SizedBox(height: AppSpacing.lg),
+                ]
+              else ...[
+                _MatchHeader(
+                  allSelected: visible.every((i) => rows[i].selected),
+                  onToggleAll: widget.onToggleAll,
+                ),
+                for (var k = 0; k < visible.length; k++)
+                  _MatchTableRow(
+                    key: ValueKey(rows[visible[k]].id),
+                    index: k,
+                    row: rows[visible[k]],
+                    onToggle: () => widget.onToggle(visible[k]),
+                    onPickCandidate: () => widget.onPickCandidate(visible[k]),
+                    onEditPrice: () => widget.onEditPrice(visible[k]),
+                  ),
+              ],
             ],
           ),
         ),
@@ -3729,14 +4142,73 @@ class _UsageChip extends StatelessWidget {
       : '${(v / 1000).toStringAsFixed(v < 10000 ? 1 : 0)}k';
 }
 
-class _MatchRow extends StatelessWidget {
-  const _MatchRow({
+
+/// ترويسة جدول المراجعة.
+class _MatchHeader extends StatelessWidget {
+  const _MatchHeader({required this.allSelected, required this.onToggleAll});
+
+  final bool allSelected;
+  final VoidCallback onToggleAll;
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = context.colors;
+    final style = context.text.labelSmall?.copyWith(color: context.tokens.hint);
+
+    return Container(
+      padding: const EdgeInsets.symmetric(
+          horizontal: AppSpacing.md, vertical: AppSpacing.sm),
+      decoration: BoxDecoration(
+        color: cs.surfaceContainerHighest,
+        borderRadius:
+            const BorderRadius.vertical(top: Radius.circular(AppRadius.md)),
+        border: Border.all(color: cs.outline),
+      ),
+      child: Row(
+        children: [
+          // تحديد الكلّ في ترويسته لا في زرٍّ فوق الجدول: موضعُه فوق
+          // عمود المربّعات يقول ما يفعله بلا كلمة.
+          SizedBox(
+            width: 36,
+            child: InkWell(
+              onTap: onToggleAll,
+              child: AppCheckbox(
+                selection:
+                    allSelected ? AppCheckState.all : AppCheckState.none,
+              ),
+            ),
+          ),
+          SizedBox(width: 48, child: Text('السطر', style: style)),
+          Expanded(flex: 5, child: Text('الصنف', style: style)),
+          SizedBox(width: 110, child: Text('السعر الحالي', style: style)),
+          SizedBox(width: 110, child: Text('السعر الجديد', style: style)),
+          SizedBox(width: 120, child: Text('الحالة', style: style)),
+        ],
+      ),
+    );
+  }
+}
+
+/// صفٌّ في جدول المراجعة.
+///
+/// ── لماذا جدولٌ لا بطاقات؟ ────────────────────────────────────────────
+/// كان كلُّ صنفٍ بطاقةً فيها اسمٌ وشارةٌ وسعرٌ وزرّان — وسبعمئة بطاقةٍ
+/// تُمرَّر شاشةً شاشة. والسؤال هنا مقارنة: «أيُّ سعرٍ تغيّر وبكم؟» —
+/// وهو يُجاب بتمرير النظر على عمودين متجاورين، لا بقراءة سبعمئة بطاقة
+/// كلٌّ منها على حدة.
+///
+/// والسطر الواحد يسع ستّة أضعاف ما تسعه البطاقة في الشاشة نفسها.
+class _MatchTableRow extends StatelessWidget {
+  const _MatchTableRow({
+    required this.index,
+    super.key,
     required this.row,
     required this.onToggle,
     required this.onPickCandidate,
     required this.onEditPrice,
   });
 
+  final int index;
   final ImportRow row;
   final VoidCallback onToggle;
   final VoidCallback onPickCandidate;
@@ -3744,152 +4216,150 @@ class _MatchRow extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final cs = context.colors;
     final tk = context.tokens;
-    final item = row.matched;
 
     final (label, tone) = switch (row.matchStatus) {
-      ImportMatch.matched => ('مطابق', StatusTone.success),
-      ImportMatch.owned => ('لديك — تحديث السعر', StatusTone.info),
+      ImportMatch.owned => ('تحديث سعر', StatusTone.info),
+      ImportMatch.matched => ('جديد', StatusTone.success),
       ImportMatch.ambiguous => ('أكّد الصنف', StatusTone.warning),
-      // لم يعد عطلاً بل وصفاً: الصنف يُضاف باسمه كما ورد في الملف،
-      // ونبرتُه تحذيرٌ لا خطر — فالمستخدم يُراجعه ولا يُمنَع منه.
-      ImportMatch.notFound => ('يُضاف باسمه', StatusTone.warning),
+      ImportMatch.notFound => ('جديد', StatusTone.success),
     };
 
-    return AppCard(
-      onTap: row.isActionable ? onToggle : null,
-      padding: const EdgeInsets.symmetric(
-          horizontal: AppSpacing.md, vertical: AppSpacing.md),
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          if (row.isActionable)
-            AnimatedScale(
-              scale: row.selected ? 1 : 0.9,
-              duration: const Duration(milliseconds: 180),
-              child: AppCheckbox(
-                selection:
-                    row.selected ? AppCheckState.all : AppCheckState.none,
-              ),
-            )
-          else
-            AppIcon(AppIcons.x, size: 18, color: tk.danger),
-          const SizedBox(width: AppSpacing.md),
+    final toneColor = switch (tone) {
+      StatusTone.success => tk.success,
+      StatusTone.info => tk.info,
+      StatusTone.warning => tk.warning,
+      _ => cs.primary,
+    };
 
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(item?.displayName ?? row.displayLabel,
-                    style: context.text.labelLarge,
-                    maxLines: 2,
-                    overflow: TextOverflow.ellipsis),
-                const SizedBox(height: 2),
-                Text(_subtitle(item, row),
-                    style: context.text.labelSmall?.copyWith(color: tk.hint),
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis),
-                const SizedBox(height: AppSpacing.xs),
-                // Wrap لا Row: الشروط التجارية تُضاف إلى شارة الحالة،
-                // وصفٌّ بخصمٍ وبونصٍ ومرشّحين يتجاوز عرض السطر فيفيض.
-                Wrap(
-                  spacing: AppSpacing.sm,
-                  runSpacing: AppSpacing.xs,
-                  crossAxisAlignment: WrapCrossAlignment.center,
+    return InkWell(
+      onTap: row.isActionable ? onToggle : null,
+      child: Container(
+        decoration: BoxDecoration(
+          color: !row.selected
+              // غير المحدَّد يُخفَت: الجدول يُمسَح بالعين، وما لن يُكتب
+              // يجب أن يسقط من المسح.
+              ? cs.surface
+              : index.isEven
+                  ? cs.surfaceContainerHighest.withValues(alpha: 0.3)
+                  : cs.surface,
+          border: Border(
+            left: BorderSide(color: cs.outline),
+            right: BorderSide(color: cs.outline),
+            bottom: BorderSide(color: cs.outline),
+          ),
+        ),
+        padding: const EdgeInsets.symmetric(
+            horizontal: AppSpacing.md, vertical: AppSpacing.sm),
+        child: Opacity(
+          opacity: row.selected ? 1 : 0.5,
+          child: Row(
+            children: [
+              SizedBox(
+                width: 36,
+                child: row.isActionable
+                    ? AppCheckbox(
+                        selection: row.selected
+                            ? AppCheckState.all
+                            : AppCheckState.none,
+                      )
+                    : null,
+              ),
+              SizedBox(
+                width: 48,
+                child: Text('${row.rowNumber}',
+                    style: context.text.labelSmall?.copyWith(color: tk.hint)),
+              ),
+              Expanded(
+                flex: 5,
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Text(row.displayLabel,
+                        style: context.text.labelMedium,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis),
+                    if ((row.company ?? '').isNotEmpty)
+                      Text(row.company!,
+                          style: context.text.labelSmall
+                              ?.copyWith(color: tk.hint),
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis),
+                  ],
+                ),
+              ),
+
+              // السعر الحالي: فارغٌ للجديد — ولا يُكتب «٠» فيُقرأ سعراً.
+              SizedBox(
+                width: 110,
+                child: Text(
+                  row.previousPrice == null
+                      ? '—'
+                      : _num(row.previousPrice!),
+                  style: context.text.labelSmall?.copyWith(color: tk.hint),
+                ),
+              ),
+
+              // ── السعر الجديد يُنقَر فيُحرَّر ──────────────────────────
+              // كان زرّاً منفصلاً في ذيل البطاقة، والنقر على الرقم نفسه
+              // أقصر طريقٍ إليه.
+              SizedBox(
+                width: 110,
+                child: InkWell(
+                  onTap: row.isActionable ? onEditPrice : null,
+                  borderRadius: BorderRadius.circular(AppRadius.sm),
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(vertical: 2),
+                    child: Row(
+                      children: [
+                        Text(
+                          row.price == null ? 'بلا سعر' : _num(row.price!),
+                          style: row.price == null
+                              ? context.text.labelSmall
+                                  ?.copyWith(color: tk.warning)
+                              : context.priceBrandStyle,
+                        ),
+                        const SizedBox(width: AppSpacing.xs),
+                        AppIcon(AppIcons.pencil,
+                            size: 10,
+                            color: tk.hint.withValues(alpha: 0.7)),
+                      ],
+                    ),
+                  ),
+                ),
+              ),
+
+              SizedBox(
+                width: 120,
+                child: Row(
                   children: [
                     StatusBadge(label: label, tone: tone),
 
-                    // ما يجعل الصفّ بند عرض — يُعرَض على الصفّ نفسه لا
-                    // في شاشةٍ أخرى: المستخدم يُقرّر ضمَّه إلى العرض وهو
-                    // يراه، لا بعد أن ينتقل.
-                    if ((row.discountPercentage ?? 0) > 0)
-                      StatusBadge(
-                        label: 'خصم ${_num(row.discountPercentage!)}٪',
-                        tone: StatusTone.info,
-                      ),
-                    if (row.bonusLabel != null)
-                      BonusBadge(label: 'بونص ${row.bonusLabel}'),
-
-                    if (row.candidates.length > 1)
-                      GestureDetector(
+                    // الملتبس وحده يُنقَر لاختيار صنفه — وما عداه محسوم.
+                    if (row.matchStatus == ImportMatch.ambiguous &&
+                        row.candidates.isNotEmpty) ...[
+                      const SizedBox(width: AppSpacing.xs),
+                      InkWell(
                         onTap: onPickCandidate,
-                        child: Row(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            AppIcon(AppIcons.chevronForwardRtl,
-                                size: 12, color: context.colors.primary),
-                            const SizedBox(width: 2),
-                            Text('تغيير',
-                                style: context.text.labelSmall?.copyWith(
-                                    color: context.colors.primary)),
-                          ],
-                        ),
+                        child: AppIcon(AppIcons.chevronForwardRtl,
+                            size: 12, color: toneColor),
                       ),
+                    ],
                   ],
                 ),
-                if (row.note != null) ...[
-                  const SizedBox(height: AppSpacing.xs),
-                  Text(row.note!,
-                      style:
-                          context.text.labelSmall?.copyWith(color: tk.warning),
-                      maxLines: 2),
-                ],
-              ],
-            ),
+              ),
+            ],
           ),
-
-          const SizedBox(width: AppSpacing.sm),
-          GestureDetector(
-            onTap: row.isActionable ? onEditPrice : null,
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.end,
-              children: [
-                Row(
-                  children: [
-                    if (row.isActionable)
-                      AppIcon(AppIcons.pencil, size: 11, color: tk.hint),
-                    if (row.isActionable) const SizedBox(width: 3),
-                    Text(
-                      row.price == null ? 'بلا سعر' : _num(row.price!),
-                      style: row.price == null
-                          ? context.text.labelSmall?.copyWith(color: tk.hint)
-                          : context.priceBrandStyle,
-                    ),
-                  ],
-                ),
-                if (row.previousPrice != null &&
-                    row.previousPrice != row.price)
-                  Text('كان ${_num(row.previousPrice!)}',
-                      style: context.text.labelSmall?.copyWith(
-                        color: tk.hint,
-                        decoration: TextDecoration.lineThrough,
-                      )),
-                Text('سطر ${row.rowNumber}',
-                    style: context.text.labelSmall?.copyWith(color: tk.hint)),
-              ],
-            ),
-          ),
-        ],
+        ),
       ),
     );
   }
 
-  static String _subtitle(ImportCandidate? item, ImportRow row) {
-    final parts = <String>[];
-    if (item != null) {
-      if (item.strength > 0) parts.add(_num(item.strength));
-      if (item.manufacturerName.isNotEmpty) parts.add(item.manufacturerName);
-      if (item.sakoCode.isNotEmpty) parts.add(item.sakoCode);
-    } else {
-      // بلا مطابقة يُعرَض ما قرأه الوكيل، ليعرف المستخدم لماذا فشلت.
-      if (row.strength != null) parts.add(_num(row.strength!));
-      if (row.form != null) parts.add(row.form!);
-      if (row.manufacturer != null) parts.add(row.manufacturer!);
-    }
-    return parts.isEmpty ? 'كما ورد: ${row.displayLabel}' : parts.join(' · ');
-  }
+  static String _num(double v) =>
+      v == v.roundToDouble() ? v.toStringAsFixed(0) : v.toString();
 }
-
 String _num(double v) =>
     v == v.roundToDouble() ? v.toInt().toString() : v.toString();
 
