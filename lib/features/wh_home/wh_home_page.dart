@@ -472,21 +472,21 @@ class _ActionCard extends StatelessWidget {
                   crossAxisAlignment: CrossAxisAlignment.start,
                   mainAxisSize: MainAxisSize.min,
                   children: [
-                    Row(
+                    // ── العنوان والشارة يلتفّان ولا يتقاطعان ──────────
+                    // كان `Row` فيه `Flexible`، فالشارةُ تأخذ عرضها كاملاً
+                    // ويُقطَع العنوان: «استيراد مخزون م…». والعنوان هو
+                    // ما يُقرأ، والشارة زينةٌ تنزل سطراً إن ضاق المكان.
+                    Wrap(
+                      crossAxisAlignment: WrapCrossAlignment.center,
+                      spacing: AppSpacing.sm,
+                      runSpacing: AppSpacing.xs,
                       children: [
-                        Flexible(
-                          child: Text(action.title,
-                              style: context.text.labelLarge,
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis),
-                        ),
-                        if (action.badge != null) ...[
-                          const SizedBox(width: AppSpacing.sm),
+                        Text(action.title, style: context.text.labelLarge),
+                        if (action.badge != null)
                           StatusBadge(
                             label: action.badge!,
                             tone: StatusTone.brand,
                           ),
-                        ],
                       ],
                     ),
                     const SizedBox(height: AppSpacing.xs),
