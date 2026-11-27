@@ -4634,6 +4634,8 @@ class _ReportRow {
     this.price,
     this.previousPrice,
     this.message,
+    this.bonusLabel,
+    this.previousBonusLabel,
   });
 
   final int rowNumber;
@@ -4644,11 +4646,23 @@ class _ReportRow {
   final double? price;
   final double? previousPrice;
   final String? message;
+
+  /// بونصُ الملف وبونصُك الحالي — للصفّ الذي تبدّل بونصه وحده.
+  final String? bonusLabel;
+  final String? previousBonusLabel;
 }
 
 enum _ReportKind {
   added('جديد', StatusTone.success),
   modified('عُدِّل السعر', StatusTone.info),
+
+  // ── نوعٌ رابع لحالةٍ كانت تُقرأ «لم يُعدَّل شيء» ──────────────────
+  // «أدويتي» تحفظ السعر وحده؛ البونص شرطٌ تجاريّ في بند العرض. فصفٌّ
+  // سعرُه ثابتٌ وبونصُه تبدّل لا شيء فيه يُكتب في المخزون — وقد قالت
+  // المراجعة لصاحبه «البونص تبدّل» ثم قالت المزامنة «لم يُعدَّل شيء».
+  // الجملتان صادقتان عن شيئين، ولا شيء كان يُفرّق بينهما.
+  bonus('البونص تبدّل', StatusTone.warning),
+
   failed('تعذّر', StatusTone.danger);
 
   const _ReportKind(this.label, this.tone);
@@ -4661,6 +4675,7 @@ enum _ReportFilter {
   all('الكل'),
   added('أُضيف'),
   modified('عُدِّل السعر'),
+  bonus('البونص تبدّل'),
   offers('العروض'),
   failed('تعذّر');
 
@@ -4712,7 +4727,11 @@ class _ReportViewState extends State<_ReportView> {
             strength: i.strength,
             price: i.price,
             previousPrice: i.previousPrice,
-            kind: _ReportKind.modified,
+            // الرسالة تقول أين وقع التغيير: «يُطبَّق عند إنشاء العرض».
+            message: i.isBonusOnly ? i.note : null,
+            bonusLabel: i.bonusLabel,
+            previousBonusLabel: i.previousBonusLabel,
+            kind: i.isBonusOnly ? _ReportKind.bonus : _ReportKind.modified,
           ),
         for (final f in widget.report.failed)
           _ReportRow(
@@ -4738,6 +4757,8 @@ class _ReportViewState extends State<_ReportView> {
         all.where((r) => r.kind == _ReportKind.added).toList(),
       _ReportFilter.modified =>
         all.where((r) => r.kind == _ReportKind.modified).toList(),
+      _ReportFilter.bonus =>
+        all.where((r) => r.kind == _ReportKind.bonus).toList(),
       _ReportFilter.failed =>
         all.where((r) => r.kind == _ReportKind.failed).toList(),
       _ReportFilter.offers => const <_ReportRow>[],
@@ -4942,6 +4963,38 @@ class _ReportHeader extends StatelessWidget {
   final VoidCallback onDone;
   final VoidCallback onAgain;
 
+
+  /// خلاصةُ المزامنة في سطر.
+  ///
+  /// ── لماذا يُذكر البونص هنا؟ ──────────────────────────────────────────
+  /// «أدويتي» تحفظ السعر وحده؛ البونص شرطٌ تجاريّ يعيش في بند العرض.
+  /// فملفٌّ لم يُغيّر إلا البونص لا يُكتب منه شيء في المخزون — وكانت
+  /// الخلاصة تقول «لم يتغيّر شيء في مخزونك» وقد قالت المراجعة قبلها
+  /// «البونص تبدّل».
+  ///
+  /// والجملتان صادقتان عن شيئين، فيظنّ صاحبها أن المزامنة أسقطت ما رآه
+  /// ويُعيد الملف. فصار التبدّل يُذكَر ومحلُّه معه.
+  static String _summary(ImportReport report) {
+    final bonus = report.bonusOnlyCount;
+
+    if (report.total > 0) {
+      final priced = report.modified.length - bonus;
+
+      return [
+        if (report.added.isNotEmpty) '${report.added.length} صنفاً جديداً',
+        if (priced > 0) '$priced سعراً مُحدَّثاً',
+        if (bonus > 0) '$bonus بونصاً تبدّل',
+        if (report.offers.isNotEmpty) '${report.offers.length} عرضاً',
+      ].join(' · ');
+    }
+
+    // لا شيء كُتب في المخزون — والسبب يختلف.
+    return bonus > 0
+        ? '$bonus صنفاً تبدّل بونصُه — يُطبَّق عند إنشاء العرض، '
+            'والأسعار كما هي'
+        : 'لم يتغيّر شيء في مخزونك';
+  }
+
   @override
   Widget build(BuildContext context) {
     final cs = context.colors;
@@ -4972,11 +5025,7 @@ class _ReportHeader extends StatelessWidget {
                     style: context.text.titleLarge?.copyWith(color: fg)),
                 const SizedBox(height: 2),
                 Text(
-                  ok
-                      ? '${report.added.length} صنفاً جديداً · '
-                          '${report.modified.length} سعراً مُحدَّثاً'
-                          '${report.offers.isNotEmpty ? " · ${report.offers.length} عرضاً" : ""}'
-                      : 'لم يتغيّر شيء في مخزونك',
+                  _summary(report),
                   style: context.text.bodySmall?.copyWith(color: tk.hint),
                 ),
               ],
@@ -5197,9 +5246,14 @@ class _ReportTableRow extends StatelessWidget {
                     overflow: TextOverflow.ellipsis),
                 if (row.message != null)
                   Text(row.message!,
-                      style:
-                          context.text.labelSmall?.copyWith(color: tk.danger),
-                      maxLines: 1,
+                      style: context.text.labelSmall?.copyWith(
+                        // سببُ البونص ليس خطأً: تنبيهٌ يقول أين وقع
+                        // التغيير، وتلوينُه أحمر يُفزع بلا داعٍ.
+                        color: row.kind == _ReportKind.bonus
+                            ? tk.hint
+                            : tk.danger,
+                      ),
+                      maxLines: 2,
                       overflow: TextOverflow.ellipsis)
                 else if (row.manufacturer.isNotEmpty || row.strength > 0)
                   Text(
@@ -5214,32 +5268,50 @@ class _ReportTableRow extends StatelessWidget {
               ],
             ),
           ),
+          // ── عمودا السعر يحملان البونص للصفّ الذي تبدّل ──────────
+          // السعر ثابتٌ في هذا الصفّ، فعرضُه رقمين متطابقين يقول
+          // «لم يتغيّر شيء» — وهو ما أوقع الالتباس. والبونص هو
+          // المتغيّر، فيحلّ محلّهما.
           if (showPrevious)
             SizedBox(
               width: 100,
-              child: row.previousPrice != null
+              child: row.kind == _ReportKind.bonus
                   ? Text(
-                      _num(row.previousPrice!),
+                      row.previousBonusLabel ?? 'بلا بونص',
                       style: context.text.labelSmall?.copyWith(
                         color: tk.hint,
                         decoration: TextDecoration.lineThrough,
                       ),
                     )
-                  : Text('—',
-                      style:
-                          context.text.labelSmall?.copyWith(color: tk.hint)),
+                  : row.previousPrice != null
+                      ? Text(
+                          _num(row.previousPrice!),
+                          style: context.text.labelSmall?.copyWith(
+                            color: tk.hint,
+                            decoration: TextDecoration.lineThrough,
+                          ),
+                        )
+                      : Text('—',
+                          style: context.text.labelSmall
+                              ?.copyWith(color: tk.hint)),
             ),
           SizedBox(
             width: 100,
-            child: row.kind == _ReportKind.failed
-                ? Text('—',
-                    style: context.text.labelSmall?.copyWith(color: tk.hint))
-                : Text(
-                    row.price == null ? 'مشتقّ' : _num(row.price!),
-                    style: row.price == null
-                        ? context.text.labelSmall?.copyWith(color: tk.hint)
-                        : context.priceBrandStyle,
-                  ),
+            child: switch (row.kind) {
+              _ReportKind.failed => Text('—',
+                  style: context.text.labelSmall?.copyWith(color: tk.hint)),
+              _ReportKind.bonus => Text(
+                  row.bonusLabel ?? 'بلا بونص',
+                  style: context.text.labelSmall
+                      ?.copyWith(color: tk.warning, fontWeight: FontWeight.w700),
+                ),
+              _ => Text(
+                  row.price == null ? 'مشتقّ' : _num(row.price!),
+                  style: row.price == null
+                      ? context.text.labelSmall?.copyWith(color: tk.hint)
+                      : context.priceBrandStyle,
+                ),
+            },
           ),
           SizedBox(
             width: 120,

@@ -569,6 +569,9 @@ class ImportAppliedItem {
     this.manufacturerName = '',
     this.price,
     this.previousPrice,
+    this.bonusLabel,
+    this.previousBonusLabel,
+    this.note,
   });
 
   final int rowNumber;
@@ -580,6 +583,18 @@ class ImportAppliedItem {
   /// السعر قبل التعديل — للمُعدَّل وحده، فيكون التغيير مفهوماً.
   final double? previousPrice;
 
+  /// بونصُ الملف وبونصُك الحالي — يُعبّآن للصفّ الذي تبدّل بونصه.
+  final String? bonusLabel;
+  final String? previousBonusLabel;
+
+  /// سببُ السطر حين لا يكفي الرقمان — «يُطبَّق عند إنشاء العرض».
+  final String? note;
+
+  /// سطرٌ سعرُه ثابتٌ وبونصُه تبدّل: لا شيء كُتب في «أدويتي»، والتغيير
+  /// قائمٌ ومحلُّه العرض.
+  bool get isBonusOnly =>
+      previousPrice != null && price == previousPrice && bonusLabel != null;
+
   /// من صفٍّ انتهت مزامنته — طريق التقرير حين يُبنى محلياً.
   factory ImportAppliedItem.fromRow(ImportRow row) => ImportAppliedItem(
         rowNumber: row.rowNumber,
@@ -589,6 +604,8 @@ class ImportAppliedItem {
             row.matched?.manufacturerName ?? row.manufacturer ?? '',
         price: row.price,
         previousPrice: row.previousPrice,
+        bonusLabel: row.bonusChanged ? row.bonusLabel : null,
+        previousBonusLabel: row.bonusChanged ? row.previousBonusLabel : null,
       );
 
   factory ImportAppliedItem.fromJson(Map<String, dynamic> j) =>
@@ -599,6 +616,9 @@ class ImportAppliedItem {
         manufacturerName: j['manufacturerName'] as String? ?? '',
         price: (j['price'] as num?)?.toDouble(),
         previousPrice: (j['previousPrice'] as num?)?.toDouble(),
+        bonusLabel: j['bonusLabel'] as String?,
+        previousBonusLabel: j['previousBonusLabel'] as String?,
+        note: j['note'] as String?,
       );
 }
 
@@ -743,6 +763,7 @@ class ImportReport {
     this.modified = const [],
     this.failed = const [],
     this.skippedCount = 0,
+    this.bonusOnlyCount = 0,
     this.offers = const [],
     this.offerFailures = const [],
   });
@@ -752,6 +773,14 @@ class ImportReport {
   final List<ImportAppliedItem> modified;
   final List<ImportFailure> failed;
   final int skippedCount;
+
+  /// منها: أصنافٌ سعرُها ثابتٌ وبونصُها تبدّل.
+  ///
+  /// «أدويتي» تحفظ السعر وحده؛ البونص في بند العرض. فهذه لا شيء فيها
+  /// يُكتب في المخزون، وهي مع ذلك تغييرٌ حقيقي محلُّه خطوةُ العرض —
+  /// وبلا عدّها تُقرأ الخلاصة «لم يتغيّر شيء» وقد قالت المراجعة
+  /// «البونص تبدّل».
+  final int bonusOnlyCount;
 
   /// العروض التي أُنشئت مسوّدةً — واحدٌ لكل شركة أقرّها المستخدم.
   final List<ImportCreatedOffer> offers;
@@ -773,6 +802,7 @@ class ImportReport {
         modified: modified,
         failed: failed,
         skippedCount: skippedCount,
+        bonusOnlyCount: bonusOnlyCount,
         offers: result.offers,
         offerFailures: result.failures,
       );
@@ -787,6 +817,7 @@ class ImportReport {
         modified: modified,
         failed: failed,
         skippedCount: skippedCount,
+        bonusOnlyCount: bonusOnlyCount,
         offerFailures: [
           ImportOfferFailure(company: '', message: message),
         ],
@@ -801,6 +832,7 @@ class ImportReport {
             .map(ImportFailure.fromJson)
             .toList(),
         skippedCount: (j['skippedCount'] as num?)?.toInt() ?? 0,
+        bonusOnlyCount: (j['bonusOnlyCount'] as num?)?.toInt() ?? 0,
         offers: ((j['offers'] as List?) ?? const [])
             .whereType<Map<String, dynamic>>()
             .map(ImportCreatedOffer.fromJson)
@@ -873,6 +905,7 @@ class ImportReport {
       modified: modified,
       failed: failed,
       skippedCount: skipped,
+      bonusOnlyCount: modified.where((i) => i.isBonusOnly).length,
       offers: _createdOffers(offerEvents),
       offerFailures: _failedOffers(offerEvents),
     );
@@ -915,6 +948,7 @@ class ImportReport {
       modified: modified,
       failed: failed,
       skippedCount: skipped,
+      bonusOnlyCount: modified.where((i) => i.isBonusOnly).length,
       offers: _createdOffers(offerEvents),
       offerFailures: _failedOffers(offerEvents),
     );
