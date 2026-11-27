@@ -11,6 +11,7 @@ import 'package:tawrid_app/repositories/warehouse_medicine_repository.dart';
 import 'package:tawrid_app/shared/ui/ui.dart';
 import 'package:tawrid_app/shared/widgets/app_states.dart';
 import 'package:tawrid_app/shared/widgets/barcode_scanner_page.dart';
+import 'package:tawrid_app/shared/utils/money.dart';
 
 // تصفّح/بحث مكتبة الأدوية المركزية (الكاتالوج العام) وإضافة ما يُريده
 // المستودع إلى قائمته — بحث أونلاين حيّ + ترقيم صفحات (تمرير لانهائي) +
@@ -276,98 +277,156 @@ class _WhMedicineCatalogPageState extends ConsumerState<WhMedicineCatalogPage> {
 
   Widget _buildBody() {
     if (_loading) return const AppListSkeleton(variant: SkeletonVariant.row);
-    if (_error != null) return ErrorState.of(_error!, onRetry: () => _runSearch(reset: true));
-
-    if (_results.isEmpty) {
-      return const EmptyState(message: 'لا توجد نتائج', icon: Icons.search_off_outlined);
+    if (_error != null) {
+      return ErrorState.of(_error!, onRetry: () => _runSearch(reset: true));
     }
 
-    return ListView.builder(
-      controller: _scrollController,
-      padding: const EdgeInsets.fromLTRB(AppSpacing.md, AppSpacing.sm, AppSpacing.md, AppSpacing.md),
-      // +1 للحاشية، و+1 أخرى لمؤشّر تحميل الصفحة التالية إن وُجد.
-      itemCount: _results.length + 1 + (_hasMore ? 1 : 0),
-      itemBuilder: (context, index) {
-        if (index == _results.length && !_hasMore) {
-          return Padding(
-            padding: const EdgeInsets.only(top: AppSpacing.xs),
-            child: Text(
-              'الكتالوج عام تديره المنصّة. إضافة دواء تُبقيه صنفاً في مخزونك '
-              'لتحدّد سعره وكمياته داخل كل عرض.',
-              style: context.text.labelSmall
-                  ?.copyWith(color: context.tokens.hint),
-            ),
-          );
-        }
-        if (index >= _results.length) {
-          return const Padding(
-            padding: EdgeInsets.symmetric(vertical: AppSpacing.md),
-            child: Center(
-              child: SizedBox(width: 22, height: 22, child: CircularProgressIndicator(strokeWidth: 2)),
-            ),
-          );
-        }
+    if (_results.isEmpty) {
+      return const EmptyState(
+          message: 'لا توجد نتائج', icon: Icons.search_off_outlined);
+    }
 
-        final item = _results[index];
-        final added = _addedCatalogIds.contains(item.id);
-        final adding = _addingNow.contains(item.id);
+    // ── شبكةٌ لا قائمة ────────────────────────────────────────────────
+    // الكتالوج الوطني عشرون ألف صنف، والمستودع يمرّ عليها بحثاً عمّا
+    // يحمله. وقائمةٌ بعمودٍ واحد على شاشةٍ عريضة تعرض ستّة أصناف وتترك
+    // ثلثي الشاشة فارغاً — فيُمرَّر ثلاثة أضعاف ما يلزم.
+    //
+    // والبطاقة هنا كبطاقة «أدويتي»: الشاشتان تعرضان الشيء نفسه (صنفٌ
+    // باسمه ومادته وعياره)، واختلافُ شكلهما يجعل الانتقال بينهما
+    // إعادةَ تعلّم.
+    return LayoutBuilder(
+      builder: (context, box) {
+        final columns = columnsFor(box.maxWidth, minTile: 320, max: 5);
 
-        return Padding(
-          padding: const EdgeInsets.only(bottom: AppSpacing.md),
-          child: AppCard(
-            child: Row(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(item.displayName,
-                          style: context.text.titleSmall,
-                          maxLines: 2,
-                          overflow: TextOverflow.ellipsis),
-                      const SizedBox(height: 3),
-                      Text(
-                        [
-                          if (item.genericName.isNotEmpty) item.genericName,
-                          item.dosageForm.label,
-                          if (item.strength > 0)
-                            '${item.strength.toStringAsFixed(0)} ملغ',
-                        ].join(' · '),
-                        style: context.text.bodySmall
-                            ?.copyWith(color: context.tokens.hint),
-                        maxLines: 2,
-                        overflow: TextOverflow.ellipsis,
-                      ),
-                    ],
-                  ),
-                ),
-                const SizedBox(width: AppSpacing.sm),
-                // ما هو في المخزون شارةٌ لا زرّ: لا إجراء عليه، وإظهار زرّ
-                // مُعطَّل يوحي بإمكان إضافته مرّتين.
-                if (added)
-                  const StatusBadge(
-                      label: 'في مخزونك',
-                      tone: StatusTone.success,
-                      icon: Icons.check)
-                else
-                  // زرّ بنصّ لا أيقونة مجرَّدة: «+» وحدها لا تقول إلى أين
-                  // يُضاف الصنف، والشارة المقابلة له نصّية («في مخزونك»)
-                  // فيُقرأ الصفّ كزوج مفهوم. والانتظار على الزرّ نفسه
-                  // (نقاط) لا دوّارة تحلّ مكانه: اختفاؤه يُفقد الصفّ مرساه.
-                  AppButton(
-                    label: 'أضف لمخزونك',
-                    fullWidth: false,
-                    compact: true,
-                    loading: adding,
-                    variant: AppButtonVariant.tonal,
-                    onPressed: () => _add(item),
-                  ),
-              ],
-            ),
+        return GridView.builder(
+          controller: _scrollController,
+          padding: const EdgeInsets.fromLTRB(
+              AppSpacing.page, AppSpacing.sm, AppSpacing.page, AppSpacing.md),
+          gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+            crossAxisCount: columns,
+            mainAxisSpacing: AppSpacing.md,
+            crossAxisSpacing: AppSpacing.md,
+
+            // ارتفاعٌ ثابت لا نسبة عرض: محتوى البطاقة معروف (اسمٌ وسطر
+            // وصفٍ وزرّ)، والنسبة تُطيلها كلّما اتّسعت الشاشة فتصير
+            // مربّعاتٍ فارغة.
+            mainAxisExtent: 148,
           ),
+          itemCount: _results.length + (_hasMore ? columns : 0),
+          itemBuilder: (context, index) {
+            // ── مؤشّر الصفحة التالية يملأ آخر صفّ ────────────────────
+            // خليّةٌ واحدة منه تكفي، والباقي فراغ — فلا تُكسَر الشبكة
+            // بصفٍّ نصفُه بطاقةٌ ونصفُه دوّارة.
+            if (index >= _results.length) {
+              return index == _results.length
+                  ? const Center(
+                      child: SizedBox(
+                        width: 22,
+                        height: 22,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      ),
+                    )
+                  : const SizedBox.shrink();
+            }
+
+            final item = _results[index];
+
+            return _CatalogCard(
+              item: item,
+              added: _addedCatalogIds.contains(item.id),
+              adding: _addingNow.contains(item.id),
+              onAdd: () => _add(item),
+            );
+          },
         );
       },
+    );
+  }
+}
+
+/// بطاقة صنفٍ في الكتالوج العام.
+class _CatalogCard extends StatelessWidget {
+  const _CatalogCard({
+    required this.item,
+    required this.added,
+    required this.adding,
+    required this.onAdd,
+  });
+
+  final MedicineCatalogItem item;
+  final bool added;
+  final bool adding;
+  final VoidCallback onAdd;
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = context.colors;
+    final tk = context.tokens;
+
+    return Container(
+      padding: const EdgeInsets.all(AppSpacing.md),
+      decoration: BoxDecoration(
+        // ما في المخزون يُميَّز بسطحه: المستودع يمرّ على عشرين ألف صنف،
+        // وأن يُعرَف المملوك بنظرةٍ يوفّر عليه قراءة كل بطاقة.
+        color: added ? tk.successSurface : cs.surface,
+        borderRadius: BorderRadius.circular(AppRadius.lg),
+        border: Border.all(
+          color: added ? tk.success.withValues(alpha: 0.35) : cs.outline,
+        ),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(item.displayName,
+              style: context.text.labelLarge,
+              maxLines: 2,
+              overflow: TextOverflow.ellipsis),
+          const SizedBox(height: AppSpacing.xs),
+          Text(
+            [
+              if (item.genericName.isNotEmpty) item.genericName,
+              item.dosageForm.label,
+              if (item.strength > 0) '${formatQuantity(item.strength)} ملغ',
+            ].join(' · '),
+            style: context.text.labelSmall?.copyWith(color: tk.hint),
+            maxLines: 2,
+            overflow: TextOverflow.ellipsis,
+          ),
+
+          if (item.manufacturerName.isNotEmpty) ...[
+            const SizedBox(height: 2),
+            Text(item.manufacturerName,
+                style: context.text.labelSmall?.copyWith(color: tk.hint),
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis),
+          ],
+
+          const Spacer(),
+
+          // ما هو في المخزون شارةٌ لا زرّ: لا إجراء عليه، وإظهار زرّ
+          // مُعطَّل يوحي بإمكان إضافته مرّتين.
+          if (added)
+            const StatusBadge(
+              label: 'في مخزونك',
+              tone: StatusTone.success,
+              icon: Icons.check,
+            )
+          else
+            // زرٌّ بنصّ لا أيقونة مجرَّدة: «+» وحدها لا تقول إلى أين
+            // يُضاف الصنف. والانتظار على الزرّ نفسه لا دوّارة تحلّ
+            // مكانه: اختفاؤه يُفقد البطاقة مرساها.
+            SizedBox(
+              width: double.infinity,
+              child: AppButton(
+                label: 'أضف لمخزونك',
+                compact: true,
+                loading: adding,
+                variant: AppButtonVariant.tonal,
+                onPressed: onAdd,
+              ),
+            ),
+        ],
+      ),
     );
   }
 }

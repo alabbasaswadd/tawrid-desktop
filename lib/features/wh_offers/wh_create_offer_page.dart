@@ -310,25 +310,124 @@ class _WhCreateOfferPageState extends ConsumerState<WhCreateOfferPage> {
     }
   }
 
+  /// مرحلة المعالج الحالية.
+  _OfferStep _step = _OfferStep.basics;
+
+  /// حارسُ كل مرحلة — فارغٌ إن صلحت، وإلا سببُ تعذّرها.
+  ///
+  /// يُحسب ولا يُخزَّن: الحقول تتبدّل مع كل حرف، وحالةٌ محفوظة تتخلّف
+  /// عنها بإطار.
+  String? _blockerOf(_OfferStep step) => switch (step) {
+        _OfferStep.basics => _title.text.trim().isEmpty
+            ? 'اكتب عنواناً للعرض'
+            : _targetRegions.isEmpty
+                ? 'اختر منطقةً مستهدفة واحدة على الأقل'
+                : _kind == SalesOfferKind.timeLimited &&
+                        !_expiresAt.isAfter(_startsAt)
+                    ? 'تاريخ الانتهاء يجب أن يلي تاريخ البدء'
+                    : null,
+        _OfferStep.items => _items.isEmpty
+            ? 'أضف صنفاً واحداً على الأقل'
+            : _items.any((d) => d.hasIncompleteTier)
+                ? 'أكمِل شريحة البونص في '
+                    '«${_items.firstWhere((d) => d.hasIncompleteTier).medicine.displayName}»'
+                : null,
+        _OfferStep.review => null,
+      };
+
+  /// ينتقل إلى المرحلة التالية بعد التحقّق من الحالية.
+  void _next() {
+    final blocker = _blockerOf(_step);
+    if (blocker != null) {
+      AppSnackbar.error(context, blocker);
+      return;
+    }
+
+    // التحقّق النحوي للحقول مع حارس المرحلة: الأول يُمسك الصيغ
+    // (رقمٌ في حقل نصّ)، والثاني يُمسك المعنى (لا صنف، لا منطقة).
+    if (_step == _OfferStep.basics &&
+        !(_formKey.currentState?.validate() ?? false)) {
+      return;
+    }
+
+    setState(() => _step = switch (_step) {
+          _OfferStep.basics => _OfferStep.items,
+          _OfferStep.items => _OfferStep.review,
+          _OfferStep.review => _OfferStep.review,
+        });
+  }
+
+  void _back() => setState(() => _step = switch (_step) {
+        _OfferStep.review => _OfferStep.items,
+        _OfferStep.items => _OfferStep.basics,
+        _OfferStep.basics => _OfferStep.basics,
+      });
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(title: const Text('عرض بيع جديد')),
+
       // SingleChildScrollView لا ListView: الأخيرة تُزيل الحقول الخارجة عن
       // الشاشة من الشجرة، فتُلغى تسجيلها في الـForm ويتخطّاها `validate()`
       // ويُرجع true. كان الأثر أن عرضاً بعنوان فارغ يُرسَل ويردّه الخادم
       // بـ400 — الحقل كان قد اختفى حين وصل المستخدم إلى زر الحفظ.
       body: Form(
         key: _formKey,
-        child: SingleChildScrollView(
-          padding: const EdgeInsets.fromLTRB(
-              AppSpacing.lg, AppSpacing.md, AppSpacing.lg, AppSpacing.xl),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-            // النموذج مقسوم بطاقات على خلفية الصفحة بدل صفحة حقول بيضاء
-            // متصلة: الأقسام تُقرأ وتُراجَع، والألوان تأتي من الثيم كما في
-            // بقية الشاشات بدل أبيض صريح.
+        child: Column(
+          children: [
+            _OfferStepBar(
+              current: _step,
+              onPick: (s) => setState(() => _step = s),
+            ),
+
+            Expanded(
+              child: SingleChildScrollView(
+                padding: const EdgeInsets.fromLTRB(AppSpacing.page,
+                    AppSpacing.lg, AppSpacing.page, AppSpacing.xl),
+                child: Center(
+                  child: ConstrainedBox(
+                    // ── عرضٌ محدود للنموذج ────────────────────────────
+                    // حقلُ نصٍّ بعرض ألفٍ وسبعمئة بكسل يُقرأ بصعوبة،
+                    // والعين تضيع بين تسميته وقيمته. والجداول وحدها
+                    // تتّسع — وهي في مرحلة المراجعة.
+                    constraints: BoxConstraints(
+                      maxWidth:
+                          _step == _OfferStep.basics ? 760 : 1200,
+                    ),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: switch (_step) {
+                        _OfferStep.basics => _basicsStep(context),
+                        _OfferStep.items => _itemsStep(context),
+                        _OfferStep.review => _reviewStep(context),
+                      },
+                    ),
+                  ),
+                ),
+              ),
+            ),
+
+            // ── شريط الإجراء ثابتٌ أسفل الشاشة ──────────────────────
+            // كان زرّ النشر في ذيل نموذجٍ طويل: من أضاف عشرين صنفاً
+            // يُمرّر شاشتين ليجده.
+            _OfferActionBar(
+              step: _step,
+              blocker: _blockerOf(_step),
+              saving: _saving,
+              itemCount: _items.length,
+              onBack: _step == _OfferStep.basics ? null : _back,
+              onNext: _step == _OfferStep.review ? null : _next,
+              onSubmit: _step == _OfferStep.review ? _submit : null,
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  /// المرحلة الأولى: بيانات العرض ومَن يراه وشروط دفعه.
+  List<Widget> _basicsStep(BuildContext context) => [
             _Section(
               title: 'بيانات العرض',
               children: [
@@ -449,6 +548,10 @@ class _WhCreateOfferPageState extends ConsumerState<WhCreateOfferPage> {
               ],
             ),
 
+      ];
+
+  /// المرحلة الثانية: الأصناف وبونص العرض.
+  List<Widget> _itemsStep(BuildContext context) => [
             const SizedBox(height: AppSpacing.lg),
             Row(
               children: [
@@ -588,16 +691,517 @@ class _WhCreateOfferPageState extends ConsumerState<WhCreateOfferPage> {
                 ),
               ),
 
-            const SizedBox(height: AppSpacing.lg),
-            AppButton(
-              label: 'نشر العرض',
-              icon: Icons.check_circle_outline,
-              loading: _saving,
-              onPressed: _saving ? null : _submit,
+      ];
+
+  /// المرحلة الثالثة: ما سيُنشأ، معروضاً كما سيراه الصيدلي.
+  ///
+  /// ── لماذا مرحلةٌ لا زرُّ تأكيد؟ ──────────────────────────────────────
+  /// العرض يُنشأ بعشرين صنفاً وأسعارٍ وبونصاتٍ ومناطقَ ومدّة — وكلُّها
+  /// وعدٌ لصيدليات. وزرُّ «هل أنت متأكد؟» يسأل عمّا لا يُرى، فيُجاب
+  /// بنعمٍ بلا قراءة.
+  ///
+  /// وهذه تعرض الحصيلة: جدولُ الأصناف بصافي أسعارها، والمناطقُ معدودة،
+  /// والمدّة بتاريخيها. فالتأكيد على ما رآه صاحبه.
+  List<Widget> _reviewStep(BuildContext context) {
+    final cs = context.colors;
+    final tk = context.tokens;
+
+    final governorates =
+        _targetRegions.map((r) => r.governorate).toSet().length;
+
+    return [
+      Container(
+        padding: const EdgeInsets.all(AppSpacing.lg),
+        decoration: BoxDecoration(
+          color: tk.brandSurface,
+          borderRadius: BorderRadius.circular(AppRadius.lg),
+          border: Border.all(color: cs.primary.withValues(alpha: 0.35)),
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(_title.text.trim(), style: context.text.titleLarge),
+            if (_description.text.trim().isNotEmpty) ...[
+              const SizedBox(height: AppSpacing.xs),
+              Text(_description.text.trim(),
+                  style: context.text.bodySmall?.copyWith(color: tk.hint)),
+            ],
+            const SizedBox(height: AppSpacing.md),
+            Wrap(
+              spacing: AppSpacing.xl,
+              runSpacing: AppSpacing.sm,
+              children: [
+                _ReviewFact(
+                  icon: Icons.inventory_2_outlined,
+                  label: 'الأصناف',
+                  value: '${_items.length}',
+                ),
+                _ReviewFact(
+                  icon: Icons.event_outlined,
+                  label: 'السريان',
+                  value: _kind == SalesOfferKind.standing
+                      ? 'عرض ثابت بلا نهاية'
+                      : '${_day(_startsAt)} → ${_day(_expiresAt)}',
+                ),
+                _ReviewFact(
+                  icon: Icons.place_outlined,
+                  label: 'المناطق',
+                  value: '${_targetRegions.length} منطقة '
+                      'في $governorates محافظة',
+                ),
+                _ReviewFact(
+                  icon: Icons.payments_outlined,
+                  label: 'العملة',
+                  value: currencySymbol(_currency),
+                ),
+              ],
             ),
+          ],
+        ),
+      ),
+
+      const SizedBox(height: AppSpacing.lg),
+      AppSectionHeader(
+        title: 'ما سيراه الصيدلي (${_items.length})',
+        appIcon: AppIcons.pill,
+      ),
+      const SizedBox(height: AppSpacing.sm),
+
+      _ReviewTableHeader(),
+      for (var i = 0; i < _items.length; i++)
+        _ReviewTableRow(
+          index: i + 1,
+          draft: _items[i],
+          currency: _currency,
+        ),
+
+      if (_bonusMedicine != null) ...[
+        const SizedBox(height: AppSpacing.lg),
+        Container(
+          padding: const EdgeInsets.all(AppSpacing.md),
+          decoration: BoxDecoration(
+            color: tk.goldSurface,
+            borderRadius: BorderRadius.circular(AppRadius.md),
+            border: Border.all(color: tk.gold),
+          ),
+          child: Row(
+            children: [
+              Icon(Icons.card_giftcard, size: 18, color: tk.goldStrong),
+              const SizedBox(width: AppSpacing.sm),
+              Expanded(
+                child: Text(
+                  'بونص العرض: ${_bonusQuantity.text.trim()} '
+                  '${_bonusUnit.text.trim()} '
+                  '${_bonusMedicine!.displayName} مجاناً',
+                  style:
+                      context.text.bodySmall?.copyWith(color: tk.goldStrong),
+                ),
+              ),
             ],
           ),
         ),
+      ],
+
+      const SizedBox(height: AppSpacing.lg),
+      Row(
+        children: [
+          AppIcon(AppIcons.info, size: 14, color: tk.hint),
+          const SizedBox(width: AppSpacing.sm),
+          Expanded(
+            child: Text(
+              // الحقيقة تُقال هنا لا بعد الحفظ: الخادم يُنشئ العرض
+              // مسوّدةً، و«أُنشئ العرض» وحدها تترك صاحبه ينتظر طلبياتٍ
+              // على عرضٍ لا تراه صيدلية.
+              'يُحفَظ مسوّدةً أولاً — ثم تنشره من شاشة «عروضي» ليصل '
+              'الصيدليات.',
+              style: context.text.labelSmall?.copyWith(color: tk.hint),
+            ),
+          ),
+        ],
+      ),
+    ];
+  }
+
+  static String _day(DateTime d) =>
+      '${d.year}/${d.month.toString().padLeft(2, '0')}/'
+      '${d.day.toString().padLeft(2, '0')}';
+}
+
+/// مراحل إنشاء العرض.
+enum _OfferStep {
+  basics('بيانات العرض', Icons.description_outlined),
+  items('الأصناف', Icons.medication_outlined),
+  review('المراجعة', Icons.fact_check_outlined);
+
+  const _OfferStep(this.label, this.icon);
+  final String label;
+  final IconData icon;
+}
+
+/// شريط مراحل المعالج.
+class _OfferStepBar extends StatelessWidget {
+  const _OfferStepBar({required this.current, required this.onPick});
+
+  final _OfferStep current;
+  final ValueChanged<_OfferStep> onPick;
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = context.colors;
+    final tk = context.tokens;
+    final steps = _OfferStep.values;
+
+    return Container(
+      padding: const EdgeInsets.symmetric(
+          horizontal: AppSpacing.page, vertical: AppSpacing.md),
+      decoration: BoxDecoration(
+        color: cs.surface,
+        border: Border(bottom: BorderSide(color: cs.outline)),
+      ),
+      child: Row(
+        children: [
+          for (var i = 0; i < steps.length; i++) ...[
+            if (i > 0)
+              Expanded(
+                child: Container(
+                  height: 1,
+                  margin:
+                      const EdgeInsets.symmetric(horizontal: AppSpacing.md),
+                  color: cs.outline,
+                ),
+              ),
+            Builder(builder: (context) {
+              final active = current == steps[i];
+              final done = current.index > i;
+              final fg = active
+                  ? cs.primary
+                  : done
+                      ? tk.success
+                      : tk.hint;
+
+              return Material(
+                color: active ? tk.brandSurface : Colors.transparent,
+                borderRadius: BorderRadius.circular(AppRadius.full),
+                child: InkWell(
+                  // ما مضى يُنقَر للعودة، وما هو آتٍ لا: التقدّم يمرّ
+                  // بزرّ المرحلة ليُفحَص ما فيها قبل مغادرتها.
+                  onTap: done ? () => onPick(steps[i]) : null,
+                  borderRadius: BorderRadius.circular(AppRadius.full),
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: AppSpacing.md, vertical: AppSpacing.xs),
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Container(
+                          width: 24,
+                          height: 24,
+                          alignment: Alignment.center,
+                          decoration: BoxDecoration(
+                            shape: BoxShape.circle,
+                            color: done || active ? fg : null,
+                            border: done || active
+                                ? null
+                                : Border.all(color: cs.outline),
+                          ),
+                          child: done
+                              ? Icon(Icons.check,
+                                  size: 13, color: cs.surface)
+                              : Text('${i + 1}',
+                                  style: context.text.labelSmall?.copyWith(
+                                      color:
+                                          active ? cs.surface : tk.hint)),
+                        ),
+                        const SizedBox(width: AppSpacing.sm),
+                        Icon(steps[i].icon, size: 14, color: fg),
+                        const SizedBox(width: AppSpacing.xs),
+                        Text(steps[i].label,
+                            style: context.text.labelMedium
+                                ?.copyWith(color: fg)),
+                      ],
+                    ),
+                  ),
+                ),
+              );
+            }),
+          ],
+        ],
+      ),
+    );
+  }
+}
+
+/// شريط الإجراء أسفل المعالج — يتبع المرحلة.
+class _OfferActionBar extends StatelessWidget {
+  const _OfferActionBar({
+    required this.step,
+    required this.blocker,
+    required this.saving,
+    required this.itemCount,
+    required this.onBack,
+    required this.onNext,
+    required this.onSubmit,
+  });
+
+  final _OfferStep step;
+
+  /// سبب تعذّر المرحلة — يُقال ولا يُترك للتخمين.
+  final String? blocker;
+
+  final bool saving;
+  final int itemCount;
+  final VoidCallback? onBack;
+  final VoidCallback? onNext;
+  final VoidCallback? onSubmit;
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = context.colors;
+    final tk = context.tokens;
+
+    return Container(
+      padding: const EdgeInsets.fromLTRB(
+          AppSpacing.page, AppSpacing.md, AppSpacing.page, AppSpacing.lg),
+      decoration: BoxDecoration(color: cs.surface, boxShadow: tk.navShadow),
+      child: SafeArea(
+        top: false,
+        child: Row(
+          children: [
+            if (onBack != null)
+              SizedBox(
+                width: 140,
+                child: AppButton(
+                  label: 'رجوع',
+                  variant: AppButtonVariant.outline,
+                  onPressed: saving ? null : onBack,
+                ),
+              ),
+
+            // سببُ التعطيل يُقال لا يُترك للتخمين — وإلا بقي الزرّ
+            // رمادياً بلا تفسير.
+            Expanded(
+              child: Padding(
+                padding:
+                    const EdgeInsets.symmetric(horizontal: AppSpacing.md),
+                child: blocker != null
+                    ? Row(
+                        children: [
+                          AppIcon(AppIcons.alertTriangle,
+                              size: 14, color: tk.warning),
+                          const SizedBox(width: AppSpacing.sm),
+                          Expanded(
+                            child: Text(blocker!,
+                                style: context.text.labelSmall
+                                    ?.copyWith(color: tk.warning)),
+                          ),
+                        ],
+                      )
+                    : Text(
+                        switch (step) {
+                          _OfferStep.basics => 'التالي: انتقِ أصنافك',
+                          _OfferStep.items =>
+                            '$itemCount صنفاً — التالي: المراجعة',
+                          _OfferStep.review =>
+                            'راجِع ما سيراه الصيدلي قبل الحفظ',
+                        },
+                        style:
+                            context.text.labelSmall?.copyWith(color: tk.hint),
+                      ),
+              ),
+            ),
+
+            SizedBox(
+              width: 240,
+              child: step == _OfferStep.review
+                  ? AppButton(
+                      label: 'حفظ العرض مسوّدةً',
+                      icon: Icons.check_circle_outline,
+                      loading: saving,
+                      onPressed: saving ? null : onSubmit,
+                    )
+                  : AppButton(
+                      label: 'التالي',
+                      appIcon: AppIcons.chevronForwardRtl,
+                      onPressed: blocker != null ? null : onNext,
+                    ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// حقيقةٌ في بطاقة المراجعة.
+class _ReviewFact extends StatelessWidget {
+  const _ReviewFact({
+    required this.icon,
+    required this.label,
+    required this.value,
+  });
+
+  final IconData icon;
+  final String label;
+  final String value;
+
+  @override
+  Widget build(BuildContext context) {
+    final tk = context.tokens;
+
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Icon(icon, size: 16, color: tk.hint),
+        const SizedBox(width: AppSpacing.sm),
+        Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text(label,
+                style: context.text.labelSmall?.copyWith(color: tk.hint)),
+            Text(value, style: context.text.labelMedium),
+          ],
+        ),
+      ],
+    );
+  }
+}
+
+class _ReviewTableHeader extends StatelessWidget {
+  const _ReviewTableHeader();
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = context.colors;
+    final style = context.text.labelSmall?.copyWith(color: context.tokens.hint);
+
+    return Container(
+      padding: const EdgeInsets.symmetric(
+          horizontal: AppSpacing.md, vertical: AppSpacing.sm),
+      decoration: BoxDecoration(
+        color: cs.surfaceContainerHighest,
+        borderRadius:
+            const BorderRadius.vertical(top: Radius.circular(AppRadius.md)),
+        border: Border.all(color: cs.outline),
+      ),
+      child: Row(
+        children: [
+          SizedBox(width: 40, child: Text('#', style: style)),
+          Expanded(flex: 5, child: Text('الصنف', style: style)),
+          SizedBox(width: 110, child: Text('الكمية', style: style)),
+          SizedBox(width: 110, child: Text('سعر الوحدة', style: style)),
+          SizedBox(width: 80, child: Text('الحسم', style: style)),
+          SizedBox(width: 110, child: Text('الصافي', style: style)),
+          SizedBox(width: 120, child: Text('البونص', style: style)),
+        ],
+      ),
+    );
+  }
+}
+
+class _ReviewTableRow extends StatelessWidget {
+  const _ReviewTableRow({
+    required this.index,
+    required this.draft,
+    required this.currency,
+  });
+
+  final int index;
+  final _OfferItemDraft draft;
+  final String currency;
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = context.colors;
+    final tk = context.tokens;
+
+    final price = parseDecimalInput(draft.unitPrice.text) ?? 0;
+    final discount = parseDecimalInput(draft.discount.text) ?? 0;
+    final net = price * (1 - discount / 100);
+
+    // الشرائح الصالحة وحدها: الصفّ المملوء جزئياً خطأُ إدخالٍ يمنع
+    // المضيّ أصلاً، وعرضُه هنا نصفَ شريحةٍ يُربك.
+    final tiers = draft
+        .validTiers()
+        .map((t) => '${formatQuantity(t.buyQuantity)}+'
+            '${formatQuantity(t.freeQuantity)}')
+        .join(' · ');
+
+    return Container(
+      decoration: BoxDecoration(
+        color: index.isEven
+            ? cs.surfaceContainerHighest.withValues(alpha: 0.3)
+            : cs.surface,
+        border: Border(
+          left: BorderSide(color: cs.outline),
+          right: BorderSide(color: cs.outline),
+          bottom: BorderSide(color: cs.outline),
+        ),
+      ),
+      padding: const EdgeInsets.symmetric(
+          horizontal: AppSpacing.md, vertical: AppSpacing.sm),
+      child: Row(
+        children: [
+          SizedBox(
+            width: 40,
+            child: Text('$index',
+                style: context.text.labelSmall?.copyWith(color: tk.hint)),
+          ),
+          Expanded(
+            flex: 5,
+            child: Text(draft.medicine.displayName,
+                style: context.text.labelMedium,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis),
+          ),
+          SizedBox(
+            width: 110,
+            child: Text(
+              draft.isOpenQuantity
+                  ? 'مفتوحة'
+                  : '${draft.quantity.text.trim()} ${draft.unit.text.trim()}',
+              style: context.text.labelSmall,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+            ),
+          ),
+          SizedBox(
+            width: 110,
+            child: Text(
+              formatMoneyWith(price, currency),
+              style: discount > 0
+                  ? context.text.labelSmall?.copyWith(
+                      color: tk.hint,
+                      decoration: TextDecoration.lineThrough,
+                    )
+                  : context.text.labelSmall,
+            ),
+          ),
+          SizedBox(
+            width: 80,
+            child: discount > 0
+                ? Text('${formatQuantity(discount)}٪',
+                    style:
+                        context.text.labelSmall?.copyWith(color: tk.success))
+                : Text('—',
+                    style: context.text.labelSmall?.copyWith(color: tk.hint)),
+          ),
+          SizedBox(
+            width: 110,
+            child: Text(formatMoneyWith(net, currency),
+                style: context.priceBrandStyle),
+          ),
+          SizedBox(
+            width: 120,
+            child: tiers.isEmpty
+                ? Text('—',
+                    style: context.text.labelSmall?.copyWith(color: tk.hint))
+                : Align(
+                    alignment: AlignmentDirectional.centerStart,
+                    child: BonusBadge(label: tiers, compact: true),
+                  ),
+          ),
+        ],
       ),
     );
   }
