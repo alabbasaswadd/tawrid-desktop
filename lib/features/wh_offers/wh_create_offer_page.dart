@@ -239,6 +239,11 @@ class _WhCreateOfferPageState extends ConsumerState<WhCreateOfferPage> {
                 id: '',
                 medicineName: d.medicine.displayName,
                 catalogItemId: d.medicine.catalogItemId,
+                // تُرسَل صراحةً لا تُشتقّ: الصنف الحرّ لا كتالوج له،
+                // فيبقى عمود «الشركة» أبيض في العرض وفي تصديره.
+                manufacturerName: d.medicine.manufacturerName.trim().isEmpty
+                    ? null
+                    : d.medicine.manufacturerName.trim(),
                 quantity: d.isOpenQuantity ? 0 : (parseDecimalInput(d.quantity.text) ?? 1),
                 unit: d.unit.text.trim(),
                 unitPrice: parseDecimalInput(d.unitPrice.text) ?? 0,

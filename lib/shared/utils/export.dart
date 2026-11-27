@@ -378,12 +378,28 @@ pw.Widget _pdfTable<T>({
         ),
       );
 
+  // ── الأعمدة تُقلَب لترتسم من اليمين ────────────────────────────────
+  // `pw.Table` لا يرث `textDirection` من الصفحة: يرصف خلاياه من اليسار
+  // مهما كان اتجاه المستند. فكان العمود الأول (الصنف) يقع أقصى اليسار،
+  // ويبدأ القارئ العربي من آخر الأعمدة — «الحالة» قبل أن يعرف الصنف.
+  //
+  // والقلب هنا لا في `columns`: هي مشتركةٌ مع تصدير Excel، وترتيبها
+  // الطبيعي (الأول = بداية القراءة) هو الصحيح هناك وفي كل نداء.
+  final ordered = columns.reversed.toList();
+
   // `Table` بأوزانٍ لا `TableHelper`: الأخير يبني من نصوصٍ خام ولا
   // يقبل تلويناً للسطور ولا وزناً للأعمدة.
   final widths = <int, pw.TableColumnWidth>{
-    for (var i = 0; i < columns.length; i++)
-      i: pw.FlexColumnWidth(columns[i].pdfFlex.toDouble()),
+    for (var i = 0; i < ordered.length; i++)
+      i: pw.FlexColumnWidth(ordered[i].pdfFlex.toDouble()),
   };
+
+  /// خليّة الإجمالي لعمودٍ بعد القلب — `totals` تتبع ترتيب `columns`.
+  String totalAt(int reversedIndex) {
+    if (totals == null) return '';
+    final original = columns.length - 1 - reversedIndex;
+    return original < totals.length ? totals[original] : '';
+  }
 
   return pw.Table(
     columnWidths: widths,
@@ -391,14 +407,14 @@ pw.Widget _pdfTable<T>({
     children: [
       pw.TableRow(
         decoration: pw.BoxDecoration(color: brand),
-        children: [for (final c in columns) cell(c.header, header: true)],
+        children: [for (final c in ordered) cell(c.header, header: true)],
       ),
       for (var i = 0; i < rows.length; i++)
         pw.TableRow(
           decoration: pw.BoxDecoration(
             color: i.isOdd ? rowAlt : PdfColors.white,
           ),
-          children: [for (final c in columns) cell(c.render(rows[i]))],
+          children: [for (final c in ordered) cell(c.render(rows[i]))],
         ),
       if (totals != null)
         pw.TableRow(
@@ -406,10 +422,38 @@ pw.Widget _pdfTable<T>({
             color: PdfColor.fromInt(0xFFE2EDEB),
           ),
           children: [
-            for (var i = 0; i < columns.length; i++)
-              cell(i < totals.length ? totals[i] : '', total: true),
+            for (var i = 0; i < ordered.length; i++)
+              cell(totalAt(i), total: true),
           ],
         ),
     ],
   );
 }
+
+// ─────────────────────────────────────────────────────────────────────
+// أدواتٌ لجداول PDF المبنيّة بـ`TableHelper` خارج هذا الملف (الفواتير).
+//
+// `pw.Table` — وهو ما يبنيه `TableHelper` — لا يرث اتجاه الصفحة، فيرصف
+// خلاياه من اليسار دائماً. فجدولٌ رؤوسه «التسلسل · الصنف · السعر» يبدأ
+// من اليسار، والقارئ العربي يبدأ من آخره.
+//
+// والعلاج قلبُ الصفوف والأوزان معاً عند البناء — ولو قُلب أحدهما وحده
+// لوقع وزنُ «الصنف» العريض على عمود «التسلسل» الضيّق.
+// ─────────────────────────────────────────────────────────────────────
+
+/// صفُّ جدول PDF مقلوباً ليُرسَم من اليمين.
+///
+/// يُطبَّق على الرؤوس وعلى كل صفّ بيانات — بالترتيب نفسه، وإلا اختلف
+/// عمودٌ عن رأسه.
+List<T> pdfRtlRow<T>(List<T> cells) => cells.reversed.toList();
+
+/// أوزانُ الأعمدة مقلوبةً لتتبع [pdfRtlRow].
+///
+/// [count] عدد الأعمدة، و[widths] بمفاتيحها الأصلية (قبل القلب).
+Map<int, pw.TableColumnWidth> pdfRtlWidths(
+  int count,
+  Map<int, pw.TableColumnWidth> widths,
+) =>
+    {
+      for (var i = 0; i < count; i++) i: ?widths[count - 1 - i],
+    };

@@ -15,6 +15,7 @@ import 'package:tawrid_app/models/supply_order_models.dart';
 import 'package:tawrid_app/repositories/conversation_repository.dart';
 import 'package:tawrid_app/repositories/supply_order_repository.dart';
 import 'package:tawrid_app/shared/ui/ui.dart';
+import 'package:tawrid_app/shared/utils/export.dart';
 import 'package:tawrid_app/shared/utils/money.dart';
 import 'package:tawrid_app/shared/utils/relative_time.dart';
 import 'package:tawrid_app/shared/widgets/app_states.dart';
@@ -694,14 +695,14 @@ Future<Uint8List> _whBuildOrderPdf(
 
         // ── جدول الأصناف ─────────────────────────────────────────────────
         pw.TableHelper.fromTextArray(
-          headers: [
+          headers: pdfRtlRow([
             '#',
             'الصنف',
             'السعر ($currencyTag)',
             'العدد',
             'الإجمالي ($currencyTag)',
             'البونص ($currencyTag)',
-          ],
+          ]),
           data: order.items.asMap().entries.map((e) {
             final idx = e.key + 1;
             final i = e.value;
@@ -709,7 +710,7 @@ Future<Uint8List> _whBuildOrderPdf(
             final bonusVal = i.agreedUnitPrice == null
                 ? 0.0
                 : _whFreeUnitsOf(i) * i.agreedUnitPrice!;
-            return [
+            return pdfRtlRow([
               '$idx',
               i.medicineName,
               i.agreedUnitPrice == null
@@ -718,7 +719,7 @@ Future<Uint8List> _whBuildOrderPdf(
               formatQuantity(i.quantity),
               i.agreedUnitPrice == null ? '—' : formatAmount(lineTotal, currency),
               bonusVal > 0 ? formatAmount(bonusVal, currency) : '0',
-            ];
+            ]);
           }).toList(),
           headerStyle: pw.TextStyle(
               fontWeight: pw.FontWeight.bold,
@@ -729,14 +730,16 @@ Future<Uint8List> _whBuildOrderPdf(
           cellStyle: const pw.TextStyle(fontSize: 10),
           oddRowDecoration: const pw.BoxDecoration(color: rowAlt),
           border: pw.TableBorder.all(color: brandLight, width: 0.5),
-          columnWidths: {
+          // الأوزان تُقلَب مع الصفوف: لو قُلب أحدهما وحده لوقع وزنُ
+          // «الصنف» العريض على عمود «#» الضيّق.
+          columnWidths: pdfRtlWidths(6, {
             0: const pw.FixedColumnWidth(28),
             1: const pw.FlexColumnWidth(3),
             2: const pw.FlexColumnWidth(1.4),
             3: const pw.FixedColumnWidth(38),
             4: const pw.FlexColumnWidth(1.4),
             5: const pw.FlexColumnWidth(1.2),
-          },
+          }),
         ),
 
         // صف المجموع الكلي
@@ -853,7 +856,7 @@ Future<Uint8List> _whBuildOrderPdf(
                   color: brand)),
           pw.SizedBox(height: 6),
           pw.TableHelper.fromTextArray(
-            headers: ['الحالة السابقة', 'الحالة الجديدة', 'بواسطة', 'التاريخ'],
+            headers: pdfRtlRow(['الحالة السابقة', 'الحالة الجديدة', 'بواسطة', 'التاريخ']),
             data: history
                 .map((h) => [
                       h.oldStatus.label,

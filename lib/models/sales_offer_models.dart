@@ -116,8 +116,10 @@ class SalesOfferItem {
   final String medicineName;
   final String? catalogItemId;
 
-  /// الشركة الصانعة من الكتالوج — فارغة للأصناف المُدخَلة يدوياً.
-  /// خاصية الصنف لا العرض: عرض واحد قد يجمع شركات شتّى.
+  /// الشركة الصانعة. خاصية الصنف لا العرض: عرضٌ واحد قد يجمع شركات شتّى.
+  ///
+  /// تُحفَظ في القلم نفسه لا تُشتقّ من الكتالوج: الصنف الحرّ — وأصنافُ
+  /// الاستيراد كلُّها حرّة — لا كتالوجَ له، فكان العمود يخرج أبيض.
   final String? manufacturerName;
 
   final double quantity;
@@ -171,6 +173,7 @@ class SalesOfferItem {
   Map<String, dynamic> toCreateJson() => {
         'medicineName': medicineName,
         'catalogItemId': catalogItemId,
+        'manufacturerName': manufacturerName,
         'quantity': quantity,
         'unit': unit,
         'unitPrice': unitPrice,
