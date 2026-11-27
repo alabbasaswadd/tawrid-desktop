@@ -14,6 +14,7 @@ import 'package:tawrid_app/shared/ui/ui.dart';
 import 'package:tawrid_app/shared/widgets/app_states.dart';
 import 'package:tawrid_app/shared/widgets/medicine_list_tile.dart';
 import 'package:tawrid_app/shared/utils/money.dart';
+import 'package:tawrid_app/shared/utils/offer_rules.dart';
 import 'package:tawrid_app/shared/widgets/multi_region_picker.dart';
 
 // إنشاء عرض بيع — اختيار الأصناف يتم من أدوية المستودع المُضافة مسبقاً
@@ -220,35 +221,14 @@ class _WhCreateOfferPageState extends ConsumerState<WhCreateOfferPage> {
   }
 
   Future<void> _submit() async {
-    if (!(_formKey.currentState?.validate() ?? false)) return;
-    if (_items.isEmpty) {
-      AppSnackbar.error(context, 'أضف دواءً واحداً على الأقل');
-      return;
-    }
-    if (_targetRegions.isEmpty) {
-      AppSnackbar.error(context, 'أضف منطقة مستهدفة واحدة على الأقل (محافظة/مدينة)');
-      return;
-    }
-
-    // سلالم البونص: يُرفضان هنا برسالة تسمّي الصنف بدل أن يردّهما الخادم
-    // برسالة عامة بعد رحلة شبكة.
-    final incomplete = _items.where((d) => d.hasIncompleteTier).toList();
-    if (incomplete.isNotEmpty) {
-      AppSnackbar.error(
-        context,
-        'أكمِل شريحة البونص في «${incomplete.first.medicine.displayName}» — '
-        'كلّ شريحة تحتاج كمية شراء وكمية مجانية، كلتاهما أكبر من صفر.',
-      );
-      return;
-    }
-
-    final duplicate = _items.where((d) => d.hasDuplicateTier).toList();
-    if (duplicate.isNotEmpty) {
-      AppSnackbar.error(
-        context,
-        'في «${duplicate.first.medicine.displayName}» شريحتان بنفس كمية '
-        'الشراء — اجعل لكل كمية شريحةً واحدة.',
-      );
+    // ── المراحل الثلاث تُفحَص لا المرئيّة وحدها ────────────────────────
+    // الإرسال يقع من «المراجعة»، وحقولُ العنوان والأصناف ليست في الشجرة
+    // حينها — فـ`_formKey.validate()` كان يعود صادقاً عنها كلّها.
+    // والحارس يقرأ النموذج، ورسالتُه تسمّي الصنف بدل أن يردّ الخادم
+    // برسالةٍ عامّة بعد رحلة شبكة.
+    final blocker = _allStepsBlocker();
+    if (blocker != null) {
+      AppSnackbar.error(context, blocker);
       return;
     }
 
@@ -328,12 +308,81 @@ class _WhCreateOfferPageState extends ConsumerState<WhCreateOfferPage> {
                     : null,
         _OfferStep.items => _items.isEmpty
             ? 'أضف صنفاً واحداً على الأقل'
-            : _items.any((d) => d.hasIncompleteTier)
-                ? 'أكمِل شريحة البونص في '
-                    '«${_items.firstWhere((d) => d.hasIncompleteTier).medicine.displayName}»'
-                : null,
+            : _itemsDataBlocker(),
         _OfferStep.review => null,
       };
+
+  /// ── لماذا يُقرأ النموذج لا الحقول ──────────────────────────────────────
+  ///
+  /// `_formKey.validate()` لا يرى إلا ما هو مركَّبٌ في الشجرة الآن. والشاشة
+  /// ثلاث مراحل تُبدَّل لا تُكدَّس، فحقول الأصناف غير موجودةٍ لحظةَ الإرسال
+  /// من مرحلة «المراجعة» — وكل حارسٍ عليها يمرّ بلا أن يُنفَّذ.
+  ///
+  /// والقراءة من المسوّدات تنجو من ذلك: هي حالةُ الشاشة، باقيةٌ بين
+  /// المراحل، فالحكم عليها حكمٌ على ما سيُرسَل فعلاً.
+  ///
+  /// والحدود هنا تطابق مدقّق الخادم حرفاً بحرف — الرحلة إلى الخادم لتكتشف
+  /// خطأً تعرفه الشاشة هدرٌ، ورسالتُه لا تُسمّي الصنف.
+  String? _itemsDataBlocker() {
+    for (final d in _items) {
+      final name = d.medicine.displayName;
+
+      if (OfferRules.unit(d.unit.text) != null) {
+        return 'حدّد وحدة الصنف في «$name»';
+      }
+
+      if (OfferRules.unitPrice(d.unitPrice.text) != null) {
+        return 'سعر الوحدة في «$name» يجب أن يكون أكبر من صفر';
+      }
+
+      if (OfferRules.quantity(d.quantity.text, open: d.isOpenQuantity) != null) {
+        return 'الكمية في «$name» غير صالحة — أو علّم «كمية مفتوحة»';
+      }
+
+      if (OfferRules.discount(d.discount.text) != null) {
+        return 'نسبة الحسم في «$name» يجب أن تكون بين ٠ و١٠٠';
+      }
+
+      if (d.hasIncompleteTier) {
+        return 'أكمِل شريحة البونص في «$name» — كلّ شريحة تحتاج كمية '
+            'شراء وكمية مجانية، كلتاهما أكبر من صفر.';
+      }
+
+      if (d.hasDuplicateTier) {
+        return 'في «$name» شريحتان بنفس كمية الشراء — اجعل لكل كمية '
+            'شريحةً واحدة.';
+      }
+    }
+
+    // هديّة العرض: اسمٌ بلا كمية نصفُ هديّة.
+    if (OfferRules.bonusQuantity(_bonusQuantity.text,
+            hasMedicine: _bonusMedicine != null) !=
+        null) {
+      return 'حدّد كمية دواء الهديّة «${_bonusMedicine!.displayName}»';
+    }
+
+    return null;
+  }
+
+  /// حارسُ المراحل الثلاث مجتمعةً — ما يُقرأ من النموذج لا من الشجرة.
+  String? _allStepsBlocker() =>
+      _blockerOf(_OfferStep.basics) ??
+      _blockerOf(_OfferStep.items) ??
+      _paymentTermsBlocker();
+
+  /// شروط الدفع — حقولها في المرحلة الأولى فلا تُرى عند الإرسال.
+  String? _paymentTermsBlocker() {
+    if (OfferRules.upfrontPercentage(_upfrontPercentage.text) != null) {
+      return 'نسبة الدفع المقدَّم يجب أن تكون بين ٠ و١٠٠';
+    }
+
+    if (OfferRules.paymentPeriodDays(_paymentPeriodDays.text) != null) {
+      return 'مدّة السداد يجب أن تكون بين ٠ و'
+          '${OfferRules.maxPaymentPeriodDays} يوماً';
+    }
+
+    return null;
+  }
 
   /// ينتقل إلى المرحلة التالية بعد التحقّق من الحالية.
   void _next() {
@@ -344,8 +393,10 @@ class _WhCreateOfferPageState extends ConsumerState<WhCreateOfferPage> {
     }
 
     // التحقّق النحوي للحقول مع حارس المرحلة: الأول يُمسك الصيغ
-    // (رقمٌ في حقل نصّ)، والثاني يُمسك المعنى (لا صنف، لا منطقة).
-    if (_step == _OfferStep.basics &&
+    // (رقمٌ في حقل نصّ) ويُلوّن الحقل نفسه، والثاني يُمسك المعنى
+    // (لا صنف، لا منطقة). ويُشغَّل في المرحلتين لا في الأولى وحدها —
+    // حقول الأصناف تختفي من الشجرة بعد تجاوزها فلا يُلوّنها شيء بعدُ.
+    if (_step != _OfferStep.review &&
         !(_formKey.currentState?.validate() ?? false)) {
       return;
     }
@@ -526,11 +577,14 @@ class _WhCreateOfferPageState extends ConsumerState<WhCreateOfferPage> {
             _Section(
               title: 'شروط الدفع (اختيارية)',
               children: [
+                // الحقلان كانا بلا حارسٍ على الطرفين: «دفعة مقدَّمة ٥٠٠٪»
+                // و«مدّة سداد −٣٠ يوماً» تُحفظان وتُعرضان على الصيدلي.
                 AppTextField(
                   controller: _upfrontPercentage,
                   label: 'نسبة الدفع المقدَّم (%)',
                   hint: '0',
                   keyboardType: TextInputType.number,
+                  validator: OfferRules.upfrontPercentage,
                 ),
                 const SizedBox(height: AppSpacing.md),
                 AppTextField(
@@ -538,6 +592,7 @@ class _WhCreateOfferPageState extends ConsumerState<WhCreateOfferPage> {
                   label: 'مدة السداد (أيام)',
                   hint: '30',
                   keyboardType: TextInputType.number,
+                  validator: OfferRules.paymentPeriodDays,
                 ),
                 const SizedBox(height: AppSpacing.md),
                 AppTextField(
@@ -676,6 +731,10 @@ class _WhCreateOfferPageState extends ConsumerState<WhCreateOfferPage> {
                             controller: _bonusQuantity,
                             keyboardType: TextInputType.number,
                             decoration: const InputDecoration(labelText: 'كمية البونص', isDense: true),
+                            // اسمٌ بلا كمية نصفُ هديّة: تُعرض على الصيدلي
+                            // ناقصةً فلا يعرف ماذا ينال.
+                            validator: (v) => OfferRules.bonusQuantity(
+                                v, hasMedicine: _bonusMedicine != null),
                           ),
                         ),
                         const SizedBox(width: AppSpacing.xs),
@@ -1284,12 +1343,8 @@ class _OfferItemCardState extends State<_OfferItemCard> {
                     keyboardType: TextInputType.number,
                     decoration: const InputDecoration(
                         labelText: 'الكمية المتاحة', isDense: true),
-                    validator: (v) {
-                      if (draft.isOpenQuantity) return null;
-                      final q = parseDecimalInput(v ?? '');
-                      if (q == null || q <= 0) return 'كمية غير صالحة';
-                      return null;
-                    },
+                    validator: (v) =>
+                        OfferRules.quantity(v, open: draft.isOpenQuantity),
                   ),
                 ),
                 const SizedBox(width: AppSpacing.xs),
@@ -1298,8 +1353,7 @@ class _OfferItemCardState extends State<_OfferItemCard> {
                     controller: draft.unit,
                     decoration:
                         const InputDecoration(labelText: 'الوحدة', isDense: true),
-                    validator: (v) =>
-                        (v == null || v.trim().isEmpty) ? 'مطلوب' : null,
+                    validator: OfferRules.unit,
                   ),
                 ),
               ],
@@ -1312,7 +1366,10 @@ class _OfferItemCardState extends State<_OfferItemCard> {
                     controller: draft.unitPrice,
                     keyboardType: TextInputType.number,
                     decoration: const InputDecoration(labelText: 'سعر الوحدة', isDense: true),
-                    validator: (v) => (parseDecimalInput(v ?? '') ?? -1) < 0 ? 'مطلوب' : null,
+                    // الصفر كان يمرّ: الشرط كان «أصغر من صفر» لا «أصغر
+                    // أو يساوي»، فيردّه الخادم بعد رحلة شبكة برسالةٍ
+                    // عامّة لا تسمّي الصنف.
+                    validator: OfferRules.unitPrice,
                   ),
                 ),
                 const SizedBox(width: AppSpacing.xs),
@@ -1321,6 +1378,9 @@ class _OfferItemCardState extends State<_OfferItemCard> {
                     controller: draft.discount,
                     keyboardType: TextInputType.number,
                     decoration: const InputDecoration(labelText: 'حسم % (اختياري)', isDense: true),
+                    // بلا حدٍّ كان يُضرب في سعر السلّة: حسمُ ١٥٠٪ يجعله
+                    // سالباً، والسالب يرفعه فوق المعلَن.
+                    validator: OfferRules.discount,
                   ),
                 ),
               ],

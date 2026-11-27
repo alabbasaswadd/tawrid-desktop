@@ -12,6 +12,7 @@ import 'package:tawrid_app/repositories/conversation_repository.dart';
 import 'package:tawrid_app/repositories/sales_offer_repository.dart';
 import 'package:tawrid_app/shared/ui/ui.dart';
 import 'package:tawrid_app/shared/utils/money.dart';
+import 'package:tawrid_app/shared/utils/offer_rules.dart';
 import 'package:tawrid_app/shared/widgets/app_states.dart';
 import 'package:tawrid_app/shared/widgets/chat_sheet.dart';
 import 'package:tawrid_app/shared/widgets/quantity_dialog.dart';
@@ -93,7 +94,13 @@ class _PhOfferDetailPageState extends ConsumerState<PhOfferDetailPage> {
   }
 
   // الكمية الافتراضية هي كامل ما يعرضه المستودع للصنف، والصيدلي ينزل منها.
-  int _maxFor(SalesOfferItem i) => i.quantity < 1 ? 1 : i.quantity.round();
+  //
+  // والصفر «كمية مفتوحة» لا «صنفٌ منه واحد»: الحقل اختياري عند المستودع
+  // (مربّع «كمية مفتوحة / غير محددة»)، والشاشة تقول «كمية مفتوحة» في
+  // تلميح الحوار — فسقفُ واحدٍ كان يكذّب تلميحه ويمنع الصيدلي من طلب
+  // أكثر من علبة.
+  int _maxFor(SalesOfferItem i) =>
+      i.quantity <= 0 ? OfferRules.openQuantityCap : i.quantity.round();
 
   @override
   void dispose() {
