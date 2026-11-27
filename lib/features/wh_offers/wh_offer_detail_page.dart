@@ -474,7 +474,10 @@ class _WhOfferDetailPageState extends ConsumerState<WhOfferDetailPage> {
                     compact: true,
                     fileName: 'عرض-${_offer!.title}',
                     title: _offer!.title,
-                    subtitle: 'أصناف العرض — ${_offer!.warehouseName}',
+                    // الاسم في الترويسة لا في العنوان الفرعي: موضعٌ
+                    // واحد لمُصدِّر التقرير في كل تصدير.
+                    issuer: _offer!.warehouseName,
+                    subtitle: 'أصناف العرض',
                     sheetName: 'أصناف العرض',
                     facts: _exportFacts(_offer!),
                     columns: _itemColumns(_offer!.currency),

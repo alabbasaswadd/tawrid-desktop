@@ -4250,6 +4250,68 @@ class _UsageChip extends StatelessWidget {
 
 
 /// ترويسة جدول المراجعة.
+/// خليّة البونص في جدول المراجعة — القديم ثم الجديد.
+///
+/// ── لماذا خليّةٌ واحدة لا عمودان؟ ──────────────────────────────────────
+/// لأنّ المقصود الفرق لا الرقمان: «١٠+١ ← ١٠+٣» تُقرأ في لمحة، وعمودان
+/// متجاوران يُلزمان العين بالمقارنة بنفسها في سبعمئة صفّ.
+///
+/// وما لم يتبدّل يُكتب رمادياً بلا سهم، فتقع العين على المتبدّل وحده.
+class _BonusCell extends StatelessWidget {
+  const _BonusCell({required this.row});
+
+  final ImportRow row;
+
+  @override
+  Widget build(BuildContext context) {
+    final tk = context.tokens;
+    final faint = context.text.labelSmall?.copyWith(color: tk.hint);
+
+    final now = row.previousBonusLabel;
+    final next = row.bonusLabel;
+
+    // لا بونص هنا ولا هناك.
+    if (now == null && next == null) {
+      return Text('—', style: faint);
+    }
+
+    if (!row.bonusChanged) {
+      return Text(next ?? now ?? '—', style: faint);
+    }
+
+    // ── تبدّل ──────────────────────────────────────────────────────────
+    // اللون لا الخطّ وحده: الشاشة فيها سبعمئة صفّ، والشارة الملوّنة
+    // تُرى من مسافة التمرير.
+    return Row(
+      children: [
+        Flexible(
+          child: Text(
+            now ?? 'بلا بونص',
+            style: faint?.copyWith(
+                decoration: TextDecoration.lineThrough,
+                decorationColor: tk.hint),
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+          ),
+        ),
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 3),
+          child: Text('←', style: faint),
+        ),
+        Flexible(
+          child: Text(
+            next ?? 'بلا بونص',
+            style: context.text.labelSmall?.copyWith(
+                color: tk.warning, fontWeight: FontWeight.w700),
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+          ),
+        ),
+      ],
+    );
+  }
+}
+
 class _MatchHeader extends StatelessWidget {
   const _MatchHeader({required this.allSelected, required this.onToggleAll});
 
@@ -4288,6 +4350,9 @@ class _MatchHeader extends StatelessWidget {
           Expanded(flex: 5, child: Text('الصنف', style: style)),
           SizedBox(width: 110, child: Text('السعر الحالي', style: style)),
           SizedBox(width: 110, child: Text('السعر الجديد', style: style)),
+          // عمودٌ للبونص: كان السعر وحده معروضاً، فتبديلُ «١٠+١» إلى
+          // «١٠+٣» لا أثر له في الشاشة كلّها.
+          SizedBox(width: 130, child: Text('البونص', style: style)),
           SizedBox(width: 120, child: Text('الحالة', style: style)),
         ],
       ),
@@ -4435,6 +4500,14 @@ class _MatchTableRow extends StatelessWidget {
                     ),
                   ),
                 ),
+              ),
+
+              // ── البونص: القديم مشطوباً ثم الجديد ────────────────────
+              // الفرق يُرى في خليّةٍ واحدة بلا نقر: «١٠+١ ← ١٠+٣». وما
+              // لم يتبدّل يُكتب رمادياً، فالعين تقع على المتبدّل وحده.
+              SizedBox(
+                width: 130,
+                child: _BonusCell(row: row),
               ),
 
               SizedBox(

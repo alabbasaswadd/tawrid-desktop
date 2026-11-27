@@ -20,6 +20,7 @@ class ExportButton<T> extends StatefulWidget {
     required this.rows,
     this.rowsLoader,
     this.subtitle,
+    this.issuer,
     this.sheetName,
     this.facts = const [],
     this.totals,
@@ -34,6 +35,13 @@ class ExportButton<T> extends StatefulWidget {
   final String title;
 
   final String? subtitle;
+
+  /// اسم المستودع المُصدِّر — يُكتب في ترويسة الـPDF تحت العنوان.
+  ///
+  /// التقرير يُرسَل إلى صيدليةٍ أو يُطبَع ويُحفَظ، وبلا اسمٍ يقول من
+  /// أصدره يصير ورقةَ أسعارٍ بلا صاحب — والشعار شعارُ المنصّة لا
+  /// شعارُ المستودع.
+  final String? issuer;
 
   /// اسم تبويب Excel. فارغٌ = [title].
   final String? sheetName;
@@ -122,6 +130,7 @@ class _ExportButtonState<T> extends State<ExportButton<T>> {
           fileName: widget.fileName,
           title: widget.title,
           subtitle: widget.subtitle,
+          issuer: widget.issuer,
           columns: widget.columns,
           rows: rows,
           // عددُ ما خرج فعلاً لا ما كان معروضاً: الحقيقة في الملف

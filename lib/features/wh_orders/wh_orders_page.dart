@@ -9,6 +9,7 @@ import 'package:tawrid_app/features/wh_home/wh_home_page.dart' show WhOrderCard;
 import 'package:tawrid_app/models/enums.dart';
 import 'package:tawrid_app/models/supply_order_models.dart';
 import 'package:tawrid_app/repositories/supply_order_repository.dart';
+import 'package:tawrid_app/repositories/warehouse_profile_repository.dart';
 import 'package:tawrid_app/shared/ui/ui.dart';
 import 'package:tawrid_app/shared/widgets/app_states.dart';
 import 'package:tawrid_app/shared/utils/export.dart';
@@ -123,6 +124,7 @@ class _WhOrdersPageState extends ConsumerState<WhOrdersPage> {
             compact: true,
             fileName: 'الطلبيات-الواردة',
             title: 'الطلبيات الواردة',
+            issuer: ref.watch(warehouseMeProvider).value?.warehouseName,
             sheetName: 'الطلبيات',
             facts: [
               (label: 'عدد الطلبيات', value: '${(_orders ?? const []).length}'),

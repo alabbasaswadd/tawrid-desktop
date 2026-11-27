@@ -121,14 +121,27 @@ Future<String?> exportToExcel<T>({
   required String sheetName,
   required List<ExportColumn<T>> columns,
   required List<T> rows,
+
+  /// عمود ترقيمٍ أوّل — «١، ٢، ٣…».
+  bool numbered = true,
 }) async {
   final sheet = XlsxSheet(
     name: sheetName,
-    headers: columns.map((c) => c.header).toList(),
-    columnWidths: columns.map((c) => c.width).toList(),
+    headers: [
+      if (numbered) _rowNumberHeader,
+      ...columns.map((c) => c.header),
+    ],
+    columnWidths: [
+      if (numbered) _rowNumberWidth,
+      ...columns.map((c) => c.width),
+    ],
     rows: [
-      for (final row in rows)
-        [for (final c in columns) XlsxCell.auto(c.value(row))],
+      for (var i = 0; i < rows.length; i++)
+        [
+          // رقماً لا نصّاً: عمودٌ نصّيٌّ في Excel يُرتَّب «١، ١٠، ٢».
+          if (numbered) XlsxCell.auto(i + 1),
+          for (final c in columns) XlsxCell.auto(c.value(rows[i])),
+        ],
     ],
   );
 
@@ -138,6 +151,15 @@ Future<String?> exportToExcel<T>({
     extension: 'xlsx',
   );
 }
+
+/// رأسُ عمود الترقيم وعرضُه — واحدٌ في Excel وPDF.
+///
+/// الترقيم في المُصدِّر لا في أعمدة كل شاشة: ستُّ شاشاتٍ تُصدّر، وعمودٌ
+/// يُكتب في كلٍّ منها ستُّ نسخٍ تفترق — وواحدةٌ تُنسى. وهو هنا أيضاً
+/// يعرف ترتيب الصفّ، وتعريفُ العمود لا يعرف إلا الصفّ نفسه.
+const String _rowNumberHeader = '#';
+const double _rowNumberWidth = 6;
+const int _rowNumberPdfFlex = 1;
 
 /// سطرٌ في ترويسة الـ PDF — تسميةٌ وقيمة.
 typedef PdfFact = ({String label, String value});
@@ -150,8 +172,18 @@ Future<Uint8List> buildTablePdf<T>({
   required List<T> rows,
   List<PdfFact> facts = const [],
 
+  /// اسم المستودع المُصدِّر — يُكتب في الترويسة تحت العنوان.
+  ///
+  /// التقرير يُرسَل إلى صيدليةٍ أو يُطبَع ويُحفَظ، وبلا اسمٍ يقول من
+  /// أصدره يصير ورقةَ أسعارٍ بلا صاحب — والشعار شعارُ المنصّة لا
+  /// شعارُ المستودع.
+  String? issuer,
+
   /// سطرُ إجماليٍّ أسفل الجدول — لكل عمودٍ خليّته.
   List<String>? totals,
+
+  /// عمود ترقيمٍ أوّل — «١، ٢، ٣…».
+  bool numbered = true,
 }) async {
   // خطُّ Cairo من الشبكة كما في فاتورة الطلبية: هو خطّ العلامة، وبلاه
   // تُرسَم العربية مربّعاتٍ فارغة في بعض القارئات.
@@ -179,7 +211,7 @@ Future<Uint8List> buildTablePdf<T>({
 
       // عريضةٌ حين تكثر الأعمدة: جدولٌ بثمانية أعمدة على A4 طوليّ
       // يقطع كل خليّةٍ سطرين.
-      pageFormat: columns.length > 6
+      pageFormat: columns.length + (numbered ? 1 : 0) > 6
           ? PdfPageFormat.a4.landscape
           : PdfPageFormat.a4,
       margin: const pw.EdgeInsets.symmetric(horizontal: 28, vertical: 32),
@@ -198,6 +230,7 @@ Future<Uint8List> buildTablePdf<T>({
         _pdfHeader(
           title: title,
           subtitle: subtitle,
+          issuer: issuer,
           stamp: stamp,
           logo: logo,
           brand: brand,
@@ -213,6 +246,7 @@ Future<Uint8List> buildTablePdf<T>({
           columns: columns,
           rows: rows,
           totals: totals,
+          numbered: numbered,
           brand: brand,
           rowAlt: rowAlt,
         ),
@@ -228,18 +262,22 @@ Future<void> exportToPdf<T>({
   required String fileName,
   required String title,
   String? subtitle,
+  String? issuer,
   required List<ExportColumn<T>> columns,
   required List<T> rows,
   List<PdfFact> facts = const [],
   List<String>? totals,
+  bool numbered = true,
 }) async {
   final bytes = await buildTablePdf(
     title: title,
     subtitle: subtitle,
+    issuer: issuer,
     columns: columns,
     rows: rows,
     facts: facts,
     totals: totals,
+    numbered: numbered,
   );
 
   // `sharePdf` لا `saveBytes`: يفتح حوار النظام الذي يطبع ويحفظ ويُرسل
@@ -277,6 +315,7 @@ Future<pw.MemoryImage?> _loadLogo() async {
 pw.Widget _pdfHeader({
   required String title,
   required String? subtitle,
+  required String? issuer,
   required String stamp,
   required pw.MemoryImage? logo,
   required PdfColor brand,
@@ -295,6 +334,18 @@ pw.Widget _pdfHeader({
                           fontSize: 18,
                           fontWeight: pw.FontWeight.bold,
                           color: brand)),
+                  // ── اسم المستودع تحت العنوان ────────────────────
+                  // أبرز من التاريخ وأخفت من العنوان: التقرير يُرسَل
+                  // إلى صيدلية أو يُطبَع ويُحفظ، وأول سؤالٍ عنه «من
+                  // أصدره؟» — والشعار شعارُ المنصّة لا شعارُ المستودع.
+                  if (issuer != null && issuer.trim().isNotEmpty) ...[
+                    pw.SizedBox(height: 4),
+                    pw.Text(issuer.trim(),
+                        style: pw.TextStyle(
+                            fontSize: 12,
+                            fontWeight: pw.FontWeight.bold,
+                            color: PdfColors.grey800)),
+                  ],
                   if (subtitle != null) ...[
                     pw.SizedBox(height: 3),
                     pw.Text(subtitle,
@@ -361,6 +412,7 @@ pw.Widget _pdfTable<T>({
   required List<ExportColumn<T>> columns,
   required List<T> rows,
   required List<String>? totals,
+  required bool numbered,
   required PdfColor brand,
   required PdfColor rowAlt,
 }) {
@@ -387,11 +439,16 @@ pw.Widget _pdfTable<T>({
   // الطبيعي (الأول = بداية القراءة) هو الصحيح هناك وفي كل نداء.
   final ordered = columns.reversed.toList();
 
+  // عمودُ الترقيم آخرَ الخلايا بعد القلب — أي أقصى اليمين، حيث تبدأ
+  // القراءة. وهو موضعُ «التسلسل» في كل جدولٍ عربيّ مطبوع.
+
   // `Table` بأوزانٍ لا `TableHelper`: الأخير يبني من نصوصٍ خام ولا
   // يقبل تلويناً للسطور ولا وزناً للأعمدة.
   final widths = <int, pw.TableColumnWidth>{
     for (var i = 0; i < ordered.length; i++)
       i: pw.FlexColumnWidth(ordered[i].pdfFlex.toDouble()),
+    if (numbered)
+      ordered.length: const pw.FlexColumnWidth(_rowNumberPdfFlex * 1.0),
   };
 
   /// خليّة الإجمالي لعمودٍ بعد القلب — `totals` تتبع ترتيب `columns`.
@@ -407,14 +464,20 @@ pw.Widget _pdfTable<T>({
     children: [
       pw.TableRow(
         decoration: pw.BoxDecoration(color: brand),
-        children: [for (final c in ordered) cell(c.header, header: true)],
+        children: [
+          for (final c in ordered) cell(c.header, header: true),
+          if (numbered) cell(_rowNumberHeader, header: true),
+        ],
       ),
       for (var i = 0; i < rows.length; i++)
         pw.TableRow(
           decoration: pw.BoxDecoration(
             color: i.isOdd ? rowAlt : PdfColors.white,
           ),
-          children: [for (final c in ordered) cell(c.render(rows[i]))],
+          children: [
+            for (final c in ordered) cell(c.render(rows[i])),
+            if (numbered) cell('${i + 1}'),
+          ],
         ),
       if (totals != null)
         pw.TableRow(
@@ -424,6 +487,8 @@ pw.Widget _pdfTable<T>({
           children: [
             for (var i = 0; i < ordered.length; i++)
               cell(totalAt(i), total: true),
+            // خليّةٌ فارغة تحت الترقيم: مجموعُ أرقام التسلسل لا معنى له.
+            if (numbered) cell('', total: true),
           ],
         ),
     ],

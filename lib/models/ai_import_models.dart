@@ -140,6 +140,9 @@ class ImportRow {
     this.matched,
     this.candidates = const [],
     this.previousPrice,
+    this.previousBonusBuyQuantity,
+    this.previousBonusFreeQuantity,
+    this.bonusChanged = false,
     this.outcome = ImportOutcome.pending,
     this.outcomeMessage,
     this.company,
@@ -181,6 +184,20 @@ class ImportRow {
 
   /// السعر الحالي في «أدويتي» حين يكون الصنف مملوكاً.
   final double? previousPrice;
+
+  /// البونص الذي يعرضه المستودع الآن لهذا الصنف — من عروضه السارية.
+  ///
+  /// مصدرُه العروض لا «أدويتي»: الأخيرة تحفظ السعر وحده، والبونص شرطٌ
+  /// تجاريّ يعيش في بند العرض.
+  final double? previousBonusBuyQuantity;
+  final double? previousBonusFreeQuantity;
+
+  /// هل يخالف بونصُ الملف ما يعرضه المستودع الآن؟
+  ///
+  /// يأتي محسوباً من الخادم لا يُحسَب هنا: القاعدة واحدة (الإضافة
+  /// والإزالة والتبديل سواء، وصيغتا العدم لا فرق بينهما)، ونسختان
+  /// منها تفترقان عند أول تعديل.
+  final bool bonusChanged;
 
   final ImportOutcome outcome;
   final String? outcomeMessage;
@@ -262,10 +279,22 @@ class ImportRow {
     if (!isActionable) return false;
     if (matchStatus != ImportMatch.owned) return true;
 
+    // ── والبونص تغييرٌ كالسعر ──────────────────────────────────────
+    // كان السعر وحده هو المقارَن، فملفٌّ غيّر «١٠+١» إلى «١٠+٣» يُعَدّ
+    // «لا جديد فيه» ويختفي من مرشّح «المتغيّر» — وهو المرشّح الافتراضي.
+    // فيمرّ التبديل صامتاً ويبقى بونصُ الشهر الماضي معروضاً.
+    if (bonusChanged) return true;
+
     // مملوك: التغيير سعرٌ مختلف — ولا سعر في الملف يعني لا تغيير.
     if (price == null) return false;
     return previousPrice == null || (price! - previousPrice!).abs() > 0.0001;
   }
+
+  /// بونصُ المستودع الحالي مصوغاً — «١٠+١»، أو فارغٌ إن لا بونص.
+  String? get previousBonusLabel =>
+      previousBonusBuyQuantity != null && previousBonusFreeQuantity != null
+          ? '${_num(previousBonusBuyQuantity!)}+${_num(previousBonusFreeQuantity!)}'
+          : null;
 
   factory ImportRow.fromJson(Map<String, dynamic> j) => ImportRow(
         id: j['id'] as String,
@@ -290,6 +319,11 @@ class ImportRow {
             .map(ImportCandidate.fromJson)
             .toList(),
         previousPrice: (j['previousPrice'] as num?)?.toDouble(),
+        previousBonusBuyQuantity:
+            (j['previousBonusBuyQuantity'] as num?)?.toDouble(),
+        previousBonusFreeQuantity:
+            (j['previousBonusFreeQuantity'] as num?)?.toDouble(),
+        bonusChanged: j['bonusChanged'] as bool? ?? false,
         outcome: ImportOutcome.fromCode((j['outcome'] as num?)?.toInt()),
         outcomeMessage: _str(j['outcomeMessage']),
         company: _str(j['company']),
@@ -330,6 +364,9 @@ class ImportRow {
         matched: matched ?? this.matched,
         candidates: candidates,
         previousPrice: previousPrice,
+        previousBonusBuyQuantity: previousBonusBuyQuantity,
+        previousBonusFreeQuantity: previousBonusFreeQuantity,
+        bonusChanged: bonusChanged,
         outcome: outcome,
         outcomeMessage: outcomeMessage,
         company: company,

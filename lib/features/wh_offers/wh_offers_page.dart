@@ -8,6 +8,7 @@ import 'package:tawrid_app/core/network/api_exception.dart';
 import 'package:tawrid_app/models/enums.dart';
 import 'package:tawrid_app/models/sales_offer_models.dart';
 import 'package:tawrid_app/repositories/sales_offer_repository.dart';
+import 'package:tawrid_app/repositories/warehouse_profile_repository.dart';
 import 'package:tawrid_app/shared/ui/ui.dart';
 import 'package:tawrid_app/shared/widgets/offer_summary_card.dart';
 import 'package:tawrid_app/shared/utils/relative_time.dart';
@@ -258,6 +259,7 @@ class _WhOffersPageState extends ConsumerState<WhOffersPage> {
             compact: true,
             fileName: 'عروضي',
             title: 'عروض المستودع',
+            issuer: ref.watch(warehouseMeProvider).value?.warehouseName,
             sheetName: 'العروض',
             facts: [
               (label: 'عدد العروض', value: '${(_offers ?? const []).length}'),

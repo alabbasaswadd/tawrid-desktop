@@ -9,6 +9,7 @@ import 'package:tawrid_app/app/theme/app_tokens_ext.dart';
 import 'package:tawrid_app/core/network/api_exception.dart';
 import 'package:tawrid_app/models/warehouse_medicine_models.dart';
 import 'package:tawrid_app/repositories/warehouse_medicine_repository.dart';
+import 'package:tawrid_app/repositories/warehouse_profile_repository.dart';
 import 'package:tawrid_app/shared/ui/ui.dart';
 import 'package:tawrid_app/shared/widgets/barcode_scanner_page.dart';
 import 'package:tawrid_app/shared/utils/money.dart';
@@ -355,6 +356,10 @@ class _WhMedicinesPageState extends ConsumerState<WhMedicinesPage> {
             compact: true,
             fileName: 'أدويتي',
             title: 'أدوية مستودعي',
+            // اسم المستودع في ترويسة الـPDF: التقرير يُرسَل إلى صيدلية
+            // أو يُطبَع، وأول سؤالٍ عنه «من أصدره؟» — والشعار شعارُ
+            // المنصّة لا شعارُ المستودع.
+            issuer: ref.watch(warehouseMeProvider).value?.warehouseName,
             sheetName: 'أدويتي',
             facts: [
               (label: 'عدد الأصناف', value: '${(_items ?? const []).length}'),
@@ -553,16 +558,11 @@ class _WhMedicinesPageState extends ConsumerState<WhMedicinesPage> {
               : formatMoneyWith(m.effectivePrice!, m.currency),
           width: 14,
         ),
-        ExportColumn(
-          header: 'مصدر السعر',
-          // الفرق مهمّ عند المراجعة: المشتقّ يتبدّل مع النشرة الوطنية،
-          // واليدوي لا يتبدّل إلا بيد صاحبه.
-          value: (m) => m.effectivePrice == null
-              ? 'غير مسعَّر'
-              : (m.isDerivedPrice ? 'مشتقّ' : 'يدوي'),
-          width: 12,
-        ),
       ];
+
+  // «مصدر السعر» (مشتقّ/يدوي) حُذف من التصدير بطلب صاحبه: تمييزٌ
+  // داخليّ يخصّ المراجعة، والملفّ يُرسَل إلى صيدليةٍ لا تعنيها طريقةُ
+  // اشتقاق الرقم. وهو ظاهرٌ في الشاشة كما كان.
 
   Widget _buildList(List<WarehouseMedicine> items) {
     if (_loading) return const AppListSkeleton(variant: SkeletonVariant.row);
