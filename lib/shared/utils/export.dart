@@ -278,8 +278,19 @@ Future<Uint8List> buildTablePdf<T>({
   return doc.save();
 }
 
-/// يُصدّر جدولاً إلى PDF ويفتح حوار الطباعة/الحفظ.
-Future<void> exportToPdf<T>({
+/// يُصدّر جدولاً إلى PDF ويحفظه حيث يختار المستخدم.
+///
+/// يُعيد المسار، أو `null` إن تراجع.
+///
+/// ── لماذا حوارُ حفظٍ لا حوارُ مشاركة؟ ─────────────────────────────────
+/// كان يُنادي `Printing.sharePdf`، وهو يفتح حوار النظام الذي يطبع
+/// ويُرسل — ويحفظ عبر «طباعة إلى PDF» لا بحفظٍ مباشر. فمن أراد ملفاً
+/// في مجلّدٍ يعرفه كان عليه أن يمرّ بالطابعة، ولا يُقال له أين ذهب.
+///
+/// والـExcel يحفظ بحوارٍ يختار فيه المكان ويُعيد المسار، فافترقت
+/// الصيغتان في فعلٍ واحد. وهذا يُوحّدهما. والطباعة لم تضع: لها بندٌ
+/// خاصّ في القائمة ينادي [printPdf].
+Future<String?> exportToPdf<T>({
   required String fileName,
   required String title,
   String? subtitle,
@@ -301,8 +312,35 @@ Future<void> exportToPdf<T>({
     numbered: numbered,
   );
 
-  // `sharePdf` لا `saveBytes`: يفتح حوار النظام الذي يطبع ويحفظ ويُرسل
-  // معاً — وهي الأفعال الثلاثة التي تُطلَب من تقرير.
+  return saveBytes(bytes: bytes, fileName: fileName, extension: 'pdf');
+}
+
+/// يبني التقرير ويفتح حوار الطباعة/المشاركة في النظام.
+///
+/// فعلٌ آخر لا بديلٌ عن [exportToPdf]: من يريد ورقةً مطبوعة لا يريد
+/// ملفاً على قرصه، ومن يريد الملف لا يريد المرور بالطابعة.
+Future<void> printPdf<T>({
+  required String fileName,
+  required String title,
+  String? subtitle,
+  String? issuer,
+  required List<ExportColumn<T>> columns,
+  required List<T> rows,
+  List<PdfFact> facts = const [],
+  List<String>? totals,
+  bool numbered = true,
+}) async {
+  final bytes = await buildTablePdf(
+    title: title,
+    subtitle: subtitle,
+    issuer: issuer,
+    columns: columns,
+    rows: rows,
+    facts: facts,
+    totals: totals,
+    numbered: numbered,
+  );
+
   await Printing.sharePdf(
       bytes: bytes, filename: '${safeFileName(fileName)}.pdf');
 }

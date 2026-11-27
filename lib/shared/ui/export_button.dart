@@ -122,26 +122,56 @@ class _ExportButtonState<T> extends State<ExportButton<T>> {
         }
       });
 
+  /// الحقائق بعد الجلب — عددُ ما خرج فعلاً لا ما كان معروضاً.
+  List<PdfFact> _factsFor(int count) => [
+        for (final f in widget.facts)
+          if (f.label == _countFactLabel)
+            (label: f.label, value: '$count')
+          else
+            f,
+      ];
+
   Future<void> _pdf() => _run(() async {
         final rows = await _resolveRows();
         if (!mounted) return;
 
-        await exportToPdf(
+        final path = await exportToPdf(
           fileName: widget.fileName,
           title: widget.title,
           subtitle: widget.subtitle,
           issuer: widget.issuer,
           columns: widget.columns,
           rows: rows,
-          // عددُ ما خرج فعلاً لا ما كان معروضاً: الحقيقة في الملف
-          // تُقاس بما فيه.
-          facts: [
-            for (final f in widget.facts)
-              if (f.label == _countFactLabel)
-                (label: f.label, value: '${rows.length}')
-              else
-                f,
-          ],
+          facts: _factsFor(rows.length),
+          totals: widget.totals,
+        );
+
+        if (!mounted) return;
+
+        // المسار يُقال كما في Excel: صاحبه يريد أن يعرف أين ذهب
+        // الملف، وهو ما يبحث عنه بعد دقيقة.
+        if (path != null) {
+          AppSnackbar.success(context, 'حُفظ الملف: $path');
+        }
+      });
+
+  /// يفتح حوار الطباعة/المشاركة في النظام.
+  ///
+  /// فعلٌ آخر لا بديلٌ عن التصدير: من يريد ورقةً مطبوعة لا يريد ملفاً
+  /// على قرصه، ومن يريد الملف لا يريد المرور بالطابعة. وكانا فعلاً
+  /// واحداً فاضطرّ من أراد الحفظ أن يمرّ بـ«طباعة إلى PDF».
+  Future<void> _print() => _run(() async {
+        final rows = await _resolveRows();
+        if (!mounted) return;
+
+        await printPdf(
+          fileName: widget.fileName,
+          title: widget.title,
+          subtitle: widget.subtitle,
+          issuer: widget.issuer,
+          columns: widget.columns,
+          rows: rows,
+          facts: _factsFor(rows.length),
           totals: widget.totals,
         );
       });
@@ -160,7 +190,11 @@ class _ExportButtonState<T> extends State<ExportButton<T>> {
     return PopupMenuButton<String>(
       enabled: enabled,
       tooltip: widget.rows.isEmpty ? 'لا شيء لتصديره' : 'تصدير',
-      onSelected: (v) => v == 'excel' ? _excel() : _pdf(),
+      onSelected: (v) => switch (v) {
+        'excel' => _excel(),
+        'pdf' => _pdf(),
+        _ => _print(),
+      },
       itemBuilder: (_) => [
         PopupMenuItem(
           value: 'excel',
@@ -179,6 +213,24 @@ class _ExportButtonState<T> extends State<ExportButton<T>> {
               AppIcon(AppIcons.fileText, size: 16, color: tk.danger),
               const SizedBox(width: AppSpacing.sm),
               const Text('تصدير PDF'),
+            ],
+          ),
+        ),
+        // ── الطباعة بندٌ ثالث ──────────────────────────────────────────
+        // كانت هي «تصدير PDF» نفسه: حوارُ النظام يطبع ويُرسل، ويحفظ
+        // عبر «طباعة إلى PDF» لا بحفظٍ مباشر — فمن أراد ملفاً في مجلّدٍ
+        // يعرفه مرّ بالطابعة ولم يُقَل له أين ذهب.
+        //
+        // ولا أيقونة طابعة في نظام التصميم، فالنصّ يحمل المعنى واللون
+        // يُفرّق — وإدخالُ أيقونةٍ من خارج AppIcons يخرق قاعدة المشروع
+        // لأجل بندِ قائمة.
+        PopupMenuItem(
+          value: 'print',
+          child: Row(
+            children: [
+              AppIcon(AppIcons.fileText, size: 16, color: tk.hint),
+              const SizedBox(width: AppSpacing.sm),
+              const Text('طباعة'),
             ],
           ),
         ),

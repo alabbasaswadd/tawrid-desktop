@@ -183,8 +183,18 @@ class _WhOrderDetailPageState extends ConsumerState<WhOrderDetailPage> {
     try {
       AppSnackbar.show(context, 'جاري إنشاء PDF...');
       final bytes = await _whBuildOrderPdf(order, _history, _itemsTotal, _freeUnits);
-      await Printing.sharePdf(
-          bytes: bytes, filename: 'طلبية-${order.orderNumber}.pdf');
+
+      // حفظٌ حيث يختار صاحبه لا حوارُ مشاركة — راجع نظيره في شاشة
+      // الصيدلي: الزرّ يقول «تصدير» وكان يفعل مشاركة.
+      final path = await saveBytes(
+        bytes: bytes,
+        fileName: 'طلبية-${order.orderNumber}',
+        extension: 'pdf',
+      );
+
+      if (mounted && path != null) {
+        AppSnackbar.success(context, 'حُفظ الملف: $path');
+      }
     } catch (e) {
       if (mounted) AppSnackbar.error(context, 'تعذّر إنشاء PDF');
     }

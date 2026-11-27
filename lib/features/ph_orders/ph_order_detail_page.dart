@@ -189,8 +189,20 @@ class _PhOrderDetailPageState extends ConsumerState<PhOrderDetailPage> {
     setState(() => _sharing = true);
     try {
       final bytes = await _buildOrderPdf(order, _history, _total, _freeUnits);
-      await Printing.sharePdf(
-          bytes: bytes, filename: 'طلبية-${order.orderNumber}.pdf');
+
+      // حفظٌ حيث يختار صاحبه لا حوارُ مشاركة: الزرّ يقول «تصدير إلى
+      // PDF»، وحوارُ المشاركة يطبع ويُرسل ويحفظ عبر «طباعة إلى PDF»
+      // وحدها — فمن أراد الفاتورة ملفاً في مجلّدٍ يعرفه مرّ بالطابعة
+      // ولم يُقَل له أين ذهبت.
+      final path = await saveBytes(
+        bytes: bytes,
+        fileName: 'طلبية-${order.orderNumber}',
+        extension: 'pdf',
+      );
+
+      if (mounted && path != null) {
+        AppSnackbar.success(context, 'حُفظ الملف: $path');
+      }
     } catch (e) {
       if (mounted) AppSnackbar.error(context, ApiException.from(e).message);
     } finally {

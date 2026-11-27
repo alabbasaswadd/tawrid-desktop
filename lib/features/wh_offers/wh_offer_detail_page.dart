@@ -74,7 +74,12 @@ class _WhOfferDetailPageState extends ConsumerState<WhOfferDetailPage> {
   ///
   /// الردّ هو العرض كاملاً، فتُعاد الشاشة من مصدرٍ واحد بلا دمجٍ يدوي
   /// يفترق عن الخادم عند أول حقلٍ يُضاف.
-  Future<void> _updateItem(
+  /// يُرسل التعديل ويُحدّث الشاشة — **ويرمي إن أخفق**.
+  ///
+  /// منفصلةٌ عن [_updateItem] لأن للخطأ مستقرَّين: ما جرى من حوارٍ
+  /// يُعرَض خطؤه **في الحوار** وهو مفتوح، وما جرى من مفتاحٍ في الجدول
+  /// لا حوار له فيُعرَض في شريط. وابتلاعُ الخطأ هنا يمنع الأول.
+  Future<void> _applyItemUpdate(
     SalesOfferItem item, {
     double? unitPrice,
     double? discountPercentage,
@@ -82,11 +87,8 @@ class _WhOfferDetailPageState extends ConsumerState<WhOfferDetailPage> {
     List<BonusTier>? bonusTiers,
     bool clearBonus = false,
     bool? isActive,
-    String? done,
   }) async {
-    if (_savingItems.contains(item.id)) return;
     setState(() => _savingItems.add(item.id));
-
     try {
       final updated =
           await ref.read(salesOfferRepositoryProvider).updateOfferItem(
@@ -101,12 +103,37 @@ class _WhOfferDetailPageState extends ConsumerState<WhOfferDetailPage> {
               );
       if (!mounted) return;
       setState(() => _offer = updated);
-      if (done != null) AppSnackbar.success(context, done);
-    } catch (e) {
-      if (!mounted) return;
-      AppSnackbar.error(context, ApiException.from(e).message);
     } finally {
       if (mounted) setState(() => _savingItems.remove(item.id));
+    }
+  }
+
+  /// نظيرتُها التي تبتلع الخطأ وتعرضه في شريط — لما لا حوار له.
+  Future<void> _updateItem(
+    SalesOfferItem item, {
+    double? unitPrice,
+    double? discountPercentage,
+    double? quantity,
+    List<BonusTier>? bonusTiers,
+    bool clearBonus = false,
+    bool? isActive,
+    String? done,
+  }) async {
+    if (_savingItems.contains(item.id)) return;
+
+    try {
+      await _applyItemUpdate(
+        item,
+        unitPrice: unitPrice,
+        discountPercentage: discountPercentage,
+        quantity: quantity,
+        bonusTiers: bonusTiers,
+        clearBonus: clearBonus,
+        isActive: isActive,
+      );
+      if (mounted && done != null) AppSnackbar.success(context, done);
+    } catch (e) {
+      if (mounted) AppSnackbar.error(context, ApiException.from(e).message);
     }
   }
 
@@ -120,89 +147,60 @@ class _WhOfferDetailPageState extends ConsumerState<WhOfferDetailPage> {
           : '',
     );
 
+    // الحسم الفارغ قرارٌ صريح بإلغائه لا «لا تمسّه»: الحقل معروضٌ
+    // بقيمته، وإفراغُه فعلٌ مقصود.
+    double? readDiscount() =>
+        discount.text.trim().isEmpty ? 0.0 : parseDecimalInput(discount.text);
+
     final saved = await showDialog<bool>(
       context: context,
-      builder: (ctx) => AlertDialog(
-        backgroundColor: ctx.colors.surface,
-        title: const Text('تعديل السعر'),
-        content: SizedBox(
-          width: 380,
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(item.medicineName, style: ctx.text.titleSmall),
-              const SizedBox(height: AppSpacing.lg),
-              AppTextField(
-                controller: price,
-                label: 'سعر الوحدة (${currencySymbol(currency)})',
-                autofocus: true,
-                keyboardType:
-                    const TextInputType.numberWithOptions(decimal: true),
-              ),
-              const SizedBox(height: AppSpacing.md),
-              AppTextField(
-                controller: discount,
-                label: 'نسبة الحسم ٪',
-                hint: 'اتركه فارغاً لإلغاء الحسم',
-                keyboardType:
-                    const TextInputType.numberWithOptions(decimal: true),
-              ),
-              const SizedBox(height: AppSpacing.sm),
-              Text(
-                'الصافي هو ما يراه الصيدلي ويُحسَب في سلّته.',
-                style: ctx.text.labelSmall,
-              ),
-            ],
-          ),
+      // لا يُغلَق بنقرةٍ خارجه أثناء الحفظ ولا بعد خطأ: ما كُتب يبقى.
+      barrierDismissible: false,
+      builder: (ctx) => _SavingDialog(
+        title: 'تعديل السعر',
+        subtitle: item.medicineName,
+        hint: 'الصافي هو ما يراه الصيدلي ويُحسَب في سلّته.',
+        fields: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            AppTextField(
+              controller: price,
+              label: 'سعر الوحدة (${currencySymbol(currency)})',
+              autofocus: true,
+              keyboardType:
+                  const TextInputType.numberWithOptions(decimal: true),
+            ),
+            const SizedBox(height: AppSpacing.md),
+            AppTextField(
+              controller: discount,
+              label: 'نسبة الحسم ٪',
+              hint: 'اتركه فارغاً لإلغاء الحسم',
+              keyboardType:
+                  const TextInputType.numberWithOptions(decimal: true),
+            ),
+          ],
         ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(ctx),
-            child: const Text('تراجع'),
-          ),
-          FilledButton(
-            onPressed: () {
-              final p = parseDecimalInput(price.text);
-              if (p == null || p <= 0) {
-                AppSnackbar.error(ctx, 'أدخل سعراً أكبر من صفر');
-                return;
-              }
+        validate: () {
+          final p = parseDecimalInput(price.text);
+          if (p == null || p <= 0) return 'أدخل سعراً أكبر من صفر';
 
-              // الحسم الفارغ قرارٌ صريح بإلغائه لا «لا تمسّه»: الحقل
-              // معروضٌ بقيمته، وإفراغُه فعلٌ مقصود.
-              final d = discount.text.trim().isEmpty
-                  ? 0.0
-                  : parseDecimalInput(discount.text);
-              if (d == null || d < 0 || d > 100) {
-                AppSnackbar.error(ctx, 'نسبة الحسم بين صفر ومئة');
-                return;
-              }
+          final d = readDiscount();
+          if (d == null || d < 0 || d > 100) return 'نسبة الحسم بين صفر ومئة';
 
-              Navigator.pop(ctx, true);
-            },
-            child: const Text('حفظ'),
-          ),
-        ],
+          return null;
+        },
+        onSave: () => _applyItemUpdate(
+          item,
+          unitPrice: parseDecimalInput(price.text),
+          discountPercentage: readDiscount(),
+        ),
       ),
     );
-
-    final newPrice = parseDecimalInput(price.text);
-    final newDiscount = discount.text.trim().isEmpty
-        ? 0.0
-        : parseDecimalInput(discount.text);
 
     price.dispose();
     discount.dispose();
 
-    if (saved != true || newPrice == null) return;
-
-    await _updateItem(
-      item,
-      unitPrice: newPrice,
-      discountPercentage: newDiscount,
-      done: 'حُفظ السعر',
-    );
+    if (saved == true && mounted) AppSnackbar.success(context, 'حُفظ السعر');
   }
 
   /// حوار تعديل بونص القلم — شريحةٌ واحدة «اشترِ N فتأخذ M».
@@ -219,103 +217,78 @@ class _WhOfferDetailPageState extends ConsumerState<WhOfferDetailPage> {
       text: first != null ? formatForInput(first.freeQuantity) : '',
     );
 
-    final result = await showDialog<String>(
+    var cleared = false;
+
+    final saved = await showDialog<bool>(
       context: context,
-      builder: (ctx) => AlertDialog(
-        backgroundColor: ctx.colors.surface,
-        title: const Text('تعديل البونص'),
-        content: SizedBox(
-          width: 380,
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(item.medicineName, style: ctx.text.titleSmall),
-              const SizedBox(height: AppSpacing.lg),
-              Row(
-                children: [
-                  Expanded(
-                    child: AppTextField(
-                      controller: buy,
-                      label: 'اشترِ',
-                      autofocus: true,
-                      keyboardType: const TextInputType.numberWithOptions(
-                          decimal: true),
-                    ),
-                  ),
-                  const SizedBox(width: AppSpacing.md),
-                  Expanded(
-                    child: AppTextField(
-                      controller: free,
-                      label: 'فتأخذ مجاناً',
-                      keyboardType: const TextInputType.numberWithOptions(
-                          decimal: true),
-                    ),
-                  ),
-                ],
+      barrierDismissible: false,
+      builder: (ctx) => _SavingDialog(
+        title: 'تعديل البونص',
+        subtitle: item.medicineName,
+        hint: 'مثال: اشترِ ١٠ فتأخذ ١ — تُحسَب على كامل الكمية في سلّة '
+            'الصيدلي.',
+        fields: Row(
+          children: [
+            Expanded(
+              child: AppTextField(
+                controller: buy,
+                label: 'اشترِ',
+                autofocus: true,
+                keyboardType:
+                    const TextInputType.numberWithOptions(decimal: true),
               ),
-              const SizedBox(height: AppSpacing.sm),
-              Text(
-                'مثال: اشترِ ١٠ فتأخذ ١ — تُحسَب على كامل الكمية في سلّة '
-                'الصيدلي.',
-                style: ctx.text.labelSmall,
+            ),
+            const SizedBox(width: AppSpacing.md),
+            Expanded(
+              child: AppTextField(
+                controller: free,
+                label: 'فتأخذ مجاناً',
+                keyboardType:
+                    const TextInputType.numberWithOptions(decimal: true),
+              ),
+            ),
+          ],
+        ),
+        validate: () {
+          final b = parseDecimalInput(buy.text);
+          final f = parseDecimalInput(free.text);
+          return (b == null || f == null || b <= 0 || f <= 0)
+              ? 'أدخل كميتين أكبر من صفر'
+              : null;
+        },
+        onSave: () {
+          final b = parseDecimalInput(buy.text)!;
+          final f = parseDecimalInput(free.text)!;
+
+          return _applyItemUpdate(
+            item,
+            // التسمية تُبنى هنا وتُعاد من الخادم بعد الحفظ — وهذه
+            // نسخةُ الإرسال، لا تصل الشاشة.
+            bonusTiers: [
+              BonusTier(
+                buyQuantity: b,
+                freeQuantity: f,
+                label: '${formatForInput(b)} + ${formatForInput(f)}',
               ),
             ],
-          ),
-        ),
-        actions: [
-          if (item.hasBonus)
-            TextButton(
-              onPressed: () => Navigator.pop(ctx, 'clear'),
-              child: Text('إزالة البونص',
-                  style: TextStyle(color: ctx.tokens.danger)),
-            ),
-          TextButton(
-            onPressed: () => Navigator.pop(ctx),
-            child: const Text('تراجع'),
-          ),
-          FilledButton(
-            onPressed: () {
-              final b = parseDecimalInput(buy.text);
-              final f = parseDecimalInput(free.text);
-              if (b == null || f == null || b <= 0 || f <= 0) {
-                AppSnackbar.error(ctx, 'أدخل كميتين أكبر من صفر');
-                return;
+          );
+        },
+        clearLabel: item.hasBonus ? 'إزالة البونص' : null,
+        onClear: item.hasBonus
+            ? () {
+                cleared = true;
+                return _applyItemUpdate(item, clearBonus: true);
               }
-              Navigator.pop(ctx, 'save');
-            },
-            child: const Text('حفظ'),
-          ),
-        ],
+            : null,
       ),
     );
-
-    final b = parseDecimalInput(buy.text);
-    final f = parseDecimalInput(free.text);
 
     buy.dispose();
     free.dispose();
 
-    if (result == 'clear') {
-      await _updateItem(item, clearBonus: true, done: 'أُزيل البونص');
-      return;
+    if (saved == true && mounted) {
+      AppSnackbar.success(context, cleared ? 'أُزيل البونص' : 'حُفظ البونص');
     }
-
-    if (result != 'save' || b == null || f == null) return;
-
-    await _updateItem(
-      item,
-      // التسمية تُبنى هنا وتُعاد من الخادم بعد الحفظ — وهذه نسخةُ
-      // الإرسال، لا تصل الشاشة.
-      bonusTiers: [
-        BonusTier(
-          buyQuantity: b,
-          freeQuantity: f,
-          label: '${formatForInput(b)} + ${formatForInput(f)}',
-        ),
-      ],
-      done: 'حُفظ البونص',
-    );
   }
 
   /// حقائق العرض في ترويسة الـ PDF.
@@ -615,6 +588,158 @@ class _WhOfferDetailPageState extends ConsumerState<WhOfferDetailPage> {
 }
 
 /// ترويسة العرض — العنوان وحاله وحقائقه في شريطٍ واحد.
+/// حوارُ تحريرٍ يحفظ بنفسه: المؤشّر فيه، والخطأ فيه.
+///
+/// ── العطب الذي أوجده ──────────────────────────────────────────────────
+/// كان الحوار يُغلَق أولاً، ثم يُرسَل الطلب، ثم يومض شريطُ خطأ. فيرى
+/// صاحبه الحوار يختفي — وهو علامة النجاح في كل واجهة — ثم يُفاجأ بخطأٍ
+/// بعد ثانية، وقد ضاع ما كتبه فيلزمه فتحُ الحوار وإدخالُه ثانيةً.
+///
+/// وبينهما لحظةٌ لا شيء فيها يقول إن شيئاً يجري: لا مؤشّر ولا تعطيل،
+/// فتُضغط «حفظ» مرّتين.
+///
+/// فصار الحوار يبقى مفتوحاً حتى يصل الجواب: زرُّه يدور، وحقولُه
+/// تُعطَّل، والخطأ يُكتب فيه تحت الحقول — فما كُتب باقٍ، والإصلاح
+/// نقرةٌ واحدة. ولا يُغلَق إلا على نجاح.
+class _SavingDialog extends StatefulWidget {
+  const _SavingDialog({
+    required this.title,
+    required this.subtitle,
+    required this.fields,
+    required this.hint,
+    required this.onSave,
+    required this.validate,
+    this.onClear,
+    this.clearLabel,
+  });
+
+  final String title;
+
+  /// اسم الصنف — يبقى ظاهراً فلا يُحرَّر قلمٌ غير المقصود.
+  final String subtitle;
+
+  final Widget fields;
+  final String hint;
+
+  /// يُرسل التعديل، ويرمي إن أخفق.
+  final Future<void> Function() onSave;
+
+  /// يفحص المُدخَل قبل الشبكة — رسالةٌ أو `null`.
+  final String? Function() validate;
+
+  /// فعلٌ ثانٍ (إزالة البونص مثلاً) — يُرسل ويرمي كـ[onSave].
+  final Future<void> Function()? onClear;
+  final String? clearLabel;
+
+  @override
+  State<_SavingDialog> createState() => _SavingDialogState();
+}
+
+class _SavingDialogState extends State<_SavingDialog> {
+  bool _busy = false;
+  String? _error;
+
+  Future<void> _run(Future<void> Function() action, {bool check = true}) async {
+    if (_busy) return;
+
+    if (check) {
+      final invalid = widget.validate();
+      if (invalid != null) {
+        setState(() => _error = invalid);
+        return;
+      }
+    }
+
+    setState(() {
+      _busy = true;
+      _error = null;
+    });
+
+    try {
+      await action();
+      if (mounted) Navigator.pop(context, true);
+    } catch (e) {
+      // لا يُغلَق على خطأ: ما كُتب يبقى، والرسالة تُقرأ مكانها.
+      if (mounted) {
+        setState(() {
+          _busy = false;
+          _error = ApiException.from(e).message;
+        });
+      }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final tk = context.tokens;
+
+    return AlertDialog(
+      backgroundColor: context.colors.surface,
+      title: Text(widget.title),
+      content: SizedBox(
+        width: 380,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(widget.subtitle, style: context.text.titleSmall),
+            const SizedBox(height: AppSpacing.lg),
+
+            // الحقول تُعطَّل أثناء الإرسال لا تُخفى: اختفاؤها يُقلق،
+            // وتعطيلُها يقول «يجري الحفظ» ويمنع التعديل في أثنائه.
+            AbsorbPointer(
+              absorbing: _busy,
+              child: Opacity(opacity: _busy ? 0.5 : 1, child: widget.fields),
+            ),
+
+            const SizedBox(height: AppSpacing.sm),
+            Text(widget.hint, style: context.text.labelSmall),
+
+            if (_error != null) ...[
+              const SizedBox(height: AppSpacing.md),
+              Container(
+                width: double.infinity,
+                padding: const EdgeInsets.symmetric(
+                    horizontal: AppSpacing.md, vertical: AppSpacing.sm),
+                decoration: BoxDecoration(
+                  color: tk.dangerSurface,
+                  borderRadius: BorderRadius.circular(AppRadius.sm),
+                ),
+                child: Text(
+                  _error!,
+                  style: context.text.labelSmall?.copyWith(color: tk.danger),
+                ),
+              ),
+            ],
+          ],
+        ),
+      ),
+      actions: [
+        if (widget.onClear != null && widget.clearLabel != null)
+          TextButton(
+            onPressed: _busy ? null : () => _run(widget.onClear!, check: false),
+            child: Text(widget.clearLabel!,
+                style: TextStyle(color: _busy ? tk.hint : tk.danger)),
+          ),
+        TextButton(
+          onPressed: _busy ? null : () => Navigator.pop(context),
+          child: const Text('تراجع'),
+        ),
+        FilledButton(
+          onPressed: _busy ? null : () => _run(widget.onSave),
+          child: _busy
+              ? const SizedBox(
+                  width: 16,
+                  height: 16,
+                  child: CircularProgressIndicator(strokeWidth: 2),
+                )
+              : const Text('حفظ'),
+        ),
+      ],
+    );
+  }
+}
+
 class _OfferHeadline extends StatelessWidget {
   const _OfferHeadline({required this.offer});
 
