@@ -69,6 +69,44 @@ class InventoryImportRepository {
     return ImportJob.fromJson(data);
   }
 
+  /// يُصحّح خريطة الأعمدة ويُعيد المهمة بصفوفها المقروءة من جديد.
+  ///
+  /// بلا نداء وكيل: الخلايا الخام محفوظةٌ في كل صفّ، والتصحيح قراءةٌ
+  /// حتمية من عمودٍ يُسمّيه صاحب الملف. فهو فوريٌّ على سبعمئة صفّ.
+  ///
+  /// كل فهرسٍ فارغ يعني «اترك ما قرأه الوكيل» — لا «امسحه». ومن أراد
+  /// الإفراغ يُمرّر [clearUnmapped].
+  Future<ImportJob> remapColumns(
+    String jobId, {
+    int? name,
+    int? price,
+    int? company,
+    int? quantity,
+    int? unit,
+    int? discount,
+    int? bonus,
+    int? strength,
+    bool clearUnmapped = false,
+  }) async {
+    final data = await _api.post(
+      ApiEndpoints.whImportRemap(jobId),
+      data: {
+        'name': ?name,
+        'price': ?price,
+        'company': ?company,
+        'quantity': ?quantity,
+        'unit': ?unit,
+        'discount': ?discount,
+        'bonus': ?bonus,
+        'strength': ?strength,
+        if (clearUnmapped) 'clearUnmapped': true,
+      },
+      receiveTimeout: const Duration(minutes: 3),
+    ) as Map<String, dynamic>;
+
+    return ImportJob.fromJson(data);
+  }
+
   /// يكتب المختار في «أدويتي» ويُعيد ماذا أُضيف وماذا عُدِّل.
   ///
   /// الصفوف تُمرَّر صريحةً دائماً: لا يُكتب في مخزون أحدٍ ما لم يره ويوافق.

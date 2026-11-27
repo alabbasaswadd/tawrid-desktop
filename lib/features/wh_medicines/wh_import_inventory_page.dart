@@ -8,12 +8,14 @@ import 'package:tawrid_app/app/theme/app_tokens_ext.dart';
 import 'package:tawrid_app/core/network/api_exception.dart';
 import 'package:tawrid_app/core/realtime/inventory_import_hub.dart';
 import 'package:tawrid_app/core/state/inventory_revision.dart';
+import 'package:tawrid_app/features/wh_medicines/import_column_mapper.dart';
 import 'package:tawrid_app/features/wh_medicines/import_offer_setup_page.dart';
 import 'package:tawrid_app/models/ai_import_models.dart';
 import 'package:tawrid_app/repositories/inventory_import_repository.dart';
 import 'package:tawrid_app/repositories/sales_offer_repository.dart';
 import 'package:tawrid_app/repositories/warehouse_service_area_repository.dart';
 import 'package:tawrid_app/shared/ui/ui.dart';
+import 'package:tawrid_app/shared/widgets/app_states.dart';
 import 'package:tawrid_app/shared/utils/money.dart';
 import 'package:tawrid_app/shared/utils/export.dart';
 import 'package:desktop_drop/desktop_drop.dart';
@@ -675,6 +677,63 @@ class _WhImportInventoryPageState extends ConsumerState<WhImportInventoryPage> {
     ];
   }
 
+  /// يفتح شاشة تصحيح الأعمدة، ويُعيد قراءة الصفوف بما أقرّه المستخدم.
+  ///
+  /// التصحيح يجري في الخادم بلا نداء وكيل: الخلايا الخام محفوظة، فهي
+  /// قراءةٌ حتمية فوريةٌ على سبعمئة صفّ.
+  Future<void> _remapColumns() async {
+    final job = _job;
+    if (job == null || _rows.isEmpty) return;
+
+    final result = await Navigator.of(context).push<ColumnMapResult>(
+      MaterialPageRoute(
+        builder: (_) => ImportColumnMapper(
+          rows: _rows,
+          agentColumns: job.summary.columns,
+        ),
+      ),
+    );
+
+    if (result == null || !mounted) return;
+
+    setState(() => _error = null);
+
+    try {
+      final updated =
+          await ref.read(inventoryImportRepositoryProvider).remapColumns(
+                job.jobId,
+                name: result['name'],
+                price: result['price'],
+                company: result['company'],
+                quantity: result['quantity'],
+                unit: result['unit'],
+                discount: result['discount'],
+                bonus: result['bonus'],
+                strength: result['strength'],
+                clearUnmapped: result.clearUnmapped,
+              );
+
+      if (!mounted) return;
+
+      setState(() {
+        _job = updated;
+        _rows = updated.rows;
+
+        // تحديدات المستخدم السابقة تسقط: الصفوف قُرئت من جديد، وسعرٌ
+        // صحّحه بيده على قراءةٍ خاطئة لم يعد يعني شيئاً.
+        _priceOverrides.clear();
+        _catalogOverrides.clear();
+        _offerDraft = null;
+      });
+
+      AppSnackbar.success(
+          context, 'أُعيدت قراءة ${updated.rows.length} صفاً بالأعمدة الجديدة');
+    } on Object catch (e) {
+      if (!mounted) return;
+      AppSnackbar.error(context, ApiException.from(e).message);
+    }
+  }
+
   /// يفتح شاشة إعداد العروض ويحفظ ما خرج منها.
   Future<List<ImportOfferPlan>?> _editOffers(
     List<ImportOfferGroup> groups,
@@ -1141,6 +1200,7 @@ class _WhImportInventoryPageState extends ConsumerState<WhImportInventoryPage> {
           _offerDraft = null;
         }),
         offerGroups: groups,
+        onRemap: _remapColumns,
         offerBlocker: groups.isEmpty ? null : _offerBlocker,
         onOffersChanged: (plans, blocker) {
           if (_offerDraft == plans && _offerBlocker == blocker) return;
@@ -2992,6 +3052,7 @@ class _ReviewView extends StatefulWidget {
     required this.onPriceListChanged,
     required this.offerGroups,
     required this.onOffersChanged,
+    required this.onRemap,
     this.error,
     this.offerCount = 0,
     this.offerCompanies = 0,
@@ -3009,6 +3070,9 @@ class _ReviewView extends StatefulWidget {
 
   /// سبب تعذّر خطّة العروض — يُعطّل زرّ المزامنة ويُقال بدل أن يُخمَّن.
   final String? offerBlocker;
+
+  /// يفتح شاشة تصحيح خريطة الأعمدة.
+  final VoidCallback onRemap;
 
   /// أقرّ المستخدم أن يمضي رغم الثغرات — فتُطوى اللافتة ولا تُعاد.
   ///
@@ -3169,7 +3233,11 @@ class _ReviewViewState extends State<_ReviewView> {
             padding: const EdgeInsets.fromLTRB(
                 AppSpacing.page, AppSpacing.lg, AppSpacing.page, AppSpacing.lg),
             children: [
-              _SummaryCard(summary: widget.job.summary, usage: widget.job.usage),
+              _SummaryCard(
+                summary: widget.job.summary,
+                usage: widget.job.usage,
+                onRemap: widget.onRemap,
+              ),
 
               if (widget.error != null) ...[
                 const SizedBox(height: AppSpacing.md),
@@ -3968,9 +4036,17 @@ class _CountTile extends StatelessWidget {
 }
 
 class _SummaryCard extends StatelessWidget {
-  const _SummaryCard({required this.summary, this.usage = const ImportUsage()});
+  const _SummaryCard({
+    required this.summary,
+    this.usage = const ImportUsage(),
+    this.onRemap,
+  });
+
   final ImportSummary summary;
   final ImportUsage usage;
+
+  /// يفتح شاشة تصحيح خريطة الأعمدة — فارغٌ حيث لا تُصحَّح.
+  final VoidCallback? onRemap;
 
   @override
   Widget build(BuildContext context) {
@@ -3994,8 +4070,38 @@ class _SummaryCard extends StatelessWidget {
           ],
           if (summary.columns.isNotEmpty) ...[
             const SizedBox(height: AppSpacing.md),
-            Text('الأعمدة كما فُهمت',
-                style: context.text.labelSmall?.copyWith(color: tk.hint)),
+            Row(
+              children: [
+                Text('الأعمدة كما فُهمت',
+                    style: context.text.labelSmall?.copyWith(color: tk.hint)),
+                const Spacer(),
+
+                // ── ومن هنا تُصحَّح ──────────────────────────────────────
+                // كانت شرائح تُقرأ ولا تُنقَر. وملفٌ فيه عمودا سعرٍ —
+                // إن اختار الوكيل الخطأ — تصير كل أسعاره خاطئة بلا
+                // علاجٍ إلا تعديل سبعمئة سعرٍ يدوياً.
+                if (onRemap != null)
+                  InkWell(
+                    onTap: onRemap,
+                    borderRadius: BorderRadius.circular(AppRadius.sm),
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: AppSpacing.sm, vertical: 2),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          AppIcon(AppIcons.pencil,
+                              size: 12, color: cs.primary),
+                          const SizedBox(width: AppSpacing.xs),
+                          Text('صحّح الأعمدة',
+                              style: context.text.labelSmall
+                                  ?.copyWith(color: cs.primary)),
+                        ],
+                      ),
+                    ),
+                  ),
+              ],
+            ),
             const SizedBox(height: AppSpacing.xs),
             Wrap(
               spacing: AppSpacing.xs,

@@ -211,6 +211,10 @@ abstract final class ApiEndpoints {
   static String whImportApply(String jobId) =>
       '$_wh/medicines/import/$jobId/apply';
 
+  /// تصحيح خريطة الأعمدة — قراءةٌ حتمية من الخلايا الخام بلا نداء وكيل.
+  static String whImportRemap(String jobId) =>
+      '$_wh/medicines/import/$jobId/remap';
+
   /// إنشاء العروض من مهمةٍ طُبِّقت — خطوةٌ تالية لـ apply لا حقلٌ فيه.
   /// فصلُها يجعل التطبيق يعود حين يفرغ المخزون، ويجعل عرضاً تعذّر
   /// يُعاد طلبه وحده بلا إعادة الملف كلّه.
