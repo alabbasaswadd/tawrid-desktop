@@ -32,8 +32,29 @@ class _WhMedicinesPageState extends ConsumerState<WhMedicinesPage> {
   List<WarehouseMedicine>? _items;
   bool _loading = true;
   ApiException? _error;
+
+  /// ما استقرّ عليه البحث وذهب به إلى الخادم.
   String _query = '';
+
+  /// ما في الحقل الآن — يُرشِّح المحمَّل فوراً قبل أن يردّ الخادم.
+  ///
+  /// البحثان ليسا بديلين: المحلّي يُجيب في الإطار نفسه على ما بين يديك،
+  /// والخادمي وحده يرى بقيّة المستودع. فيبدأ الترشيح مع أول حرف، ثم
+  /// تحلّ نتيجة الخادم محلّه بعد المهلة.
+  String _liveQuery = '';
+
   Timer? _debounce;
+
+  /// شركةٌ مختارة للفلترة — فارغةٌ تعني «كل الشركات».
+  String? _company;
+
+  /// شركاتُ المستودع كلّه مع عدد أصناف كلٍّ منها.
+  List<MedicineCompany> _companies = const [];
+
+  /// التمرير: الجلب يبدأ قبل بلوغ النهاية بمسافة شاشةٍ تقريباً، فلا
+  /// يرى المستخدم فراغاً ينتظره.
+  final _scroll = ScrollController();
+  static const double _loadMoreThreshold = 700;
 
   /// كم صنفاً في المستودع كلّه — لا كم حُمِّل.
   int _total = 0;
@@ -50,13 +71,41 @@ class _WhMedicinesPageState extends ConsumerState<WhMedicinesPage> {
   @override
   void initState() {
     super.initState();
+    _scroll.addListener(_onScroll);
     _load();
+    _loadCompanies();
   }
 
   @override
   void dispose() {
     _debounce?.cancel();
+    _scroll.removeListener(_onScroll);
+    _scroll.dispose();
     super.dispose();
+  }
+
+  /// يجلب الصفحة التالية حين تقترب النهاية.
+  ///
+  /// كان الباقي خلف زرّ «عرض N صنفاً إضافياً» يُضغط ستّ مرّات لبلوغ
+  /// أربعمئة صنف. والحارس في `_loadMore` نفسه يمنع طلبين على إزاحةٍ
+  /// واحدة، فلا يضرّ إطلاقُه مع كل إطار تمرير.
+  void _onScroll() {
+    if (!_scroll.hasClients) return;
+
+    final remaining = _scroll.position.maxScrollExtent - _scroll.position.pixels;
+    if (remaining <= _loadMoreThreshold) _loadMore();
+  }
+
+  Future<void> _loadCompanies() async {
+    try {
+      final list =
+          await ref.read(warehouseMedicineRepositoryProvider).getCompanies();
+      if (!mounted) return;
+      setState(() => _companies = list);
+    } catch (_) {
+      // قائمةُ شركاتٍ تعذّرت لا تُسقط الشاشة: الأصناف هي المقصود،
+      // وشريط الفلترة يختفي وحده حين تكون فارغة.
+    }
   }
 
   Future<void> _load({bool silent = false}) async {
@@ -67,7 +116,7 @@ class _WhMedicinesPageState extends ConsumerState<WhMedicinesPage> {
     try {
       final page = await ref
           .read(warehouseMedicineRepositoryProvider)
-          .getMinePage(search: _query, limit: _pageSize);
+          .getMinePage(search: _query, company: _company, limit: _pageSize);
       if (!mounted) return;
       setState(() {
         _items = page.items;
@@ -97,6 +146,7 @@ class _WhMedicinesPageState extends ConsumerState<WhMedicinesPage> {
           .read(warehouseMedicineRepositoryProvider)
           .getMinePage(
             search: _query,
+            company: _company,
             limit: _pageSize,
             offset: loaded.length,
           );
@@ -116,13 +166,48 @@ class _WhMedicinesPageState extends ConsumerState<WhMedicinesPage> {
   }
 
   void _onSearchChanged(String v) {
+    // ── محلّيٌّ فوراً ───────────────────────────────────────────────
+    // الترشيح على ما حُمِّل يُجيب في الإطار نفسه، فتبدأ القائمة تضيق
+    // مع أول حرف بدل أن تجمد نصف ثانيةٍ تنتظر الشبكة.
+    setState(() => _liveQuery = v);
+
     _debounce?.cancel();
-    // نصف ثانية: كتابة اسم دواء عربي لا تستحق رحلة شبكة لكل حرف.
+    // ── ثم خادميٌّ بعد المهلة ──────────────────────────────────────
+    // وهو وحده يرى بقيّة المستودع: المحمَّل ستّون من أربعمئة، والصنف
+    // المطلوب غالباً ليس فيها. ونصف ثانية لأن كتابة اسم دواء عربي
+    // لا تستحق رحلة شبكة لكل حرف.
     _debounce = Timer(const Duration(milliseconds: 450), () {
       if (!mounted) return;
       setState(() => _query = v);
       _load(silent: true);
     });
+  }
+
+  /// يختار شركةً للفلترة — أو يُلغي الاختيار بالضغط على المختارة.
+  void _pickCompany(String? name) {
+    if (_company == name) name = null;
+    setState(() => _company = name);
+    _load(silent: true);
+  }
+
+  /// ما يُعرَض الآن: المحمَّل مرشَّحاً بما في حقل البحث.
+  ///
+  /// يصير بلا أثرٍ متى ردّ الخادم — نتيجته مطابقةٌ أصلاً — فدوره
+  /// اللحظات التي تسبق ردّه، وهي اللحظات التي تُقاس بها سرعة الشاشة.
+  List<WarehouseMedicine> _visible() {
+    final items = _items ?? const <WarehouseMedicine>[];
+    final q = _liveQuery.trim().toLowerCase();
+    if (q.isEmpty) return items;
+
+    bool hit(String? v) => v != null && v.toLowerCase().contains(q);
+
+    return items
+        .where((m) =>
+            hit(m.displayName) ||
+            hit(m.genericName) ||
+            hit(m.manufacturerName) ||
+            hit(m.sakoCode))
+        .toList();
   }
 
   Future<void> _remove(WarehouseMedicine m) async {
@@ -273,9 +358,20 @@ class _WhMedicinesPageState extends ConsumerState<WhMedicinesPage> {
             sheetName: 'أدويتي',
             facts: [
               (label: 'عدد الأصناف', value: '${(_items ?? const []).length}'),
+              if (_company != null) (label: 'الشركة', value: _company!),
+              if (_query.trim().isNotEmpty)
+                (label: 'البحث', value: _query.trim()),
             ],
             columns: _medicineColumns(),
             rows: _items ?? const [],
+            // ── الملفّ يحمل ما يملكه المستودع لا ما عُرض ──────────────
+            // الشاشة تُحمّل ستّين صنفاً وتزيد بالتمرير، وكان التصدير
+            // يكتب المحمَّل وحده في ملفٍّ عنوانه «أدويتي» بلا أن يقول
+            // إنه ناقص. والبحث والفلترة تُحترمان: من فلتر بشركةٍ ثم
+            // صدّر يريد تلك الشركة كاملةً لا المستودع كلّه.
+            rowsLoader: () => ref
+                .read(warehouseMedicineRepositoryProvider)
+                .getAllMine(search: _query, company: _company),
           ),
           // زر الكتالوج العام: حدٌّ بلون العلامة — ثانوي لا رئيسي.
           Padding(
@@ -314,7 +410,7 @@ class _WhMedicinesPageState extends ConsumerState<WhMedicinesPage> {
 
   Widget _buildBody() {
     final tk = context.tokens;
-    final items = _items ?? const <WarehouseMedicine>[];
+    final items = _visible();
     final gutter = context.pageGutter;
 
     // شريط أدواتٍ واحد: بحثٌ واستيرادٌ وتبديل عرضٍ في سطر على الشاشة
@@ -364,6 +460,13 @@ class _WhMedicinesPageState extends ConsumerState<WhMedicinesPage> {
                 ),
         ),
 
+        if (_companies.isNotEmpty)
+          _CompanyFilterBar(
+            companies: _companies,
+            selected: _company,
+            onPick: _pickCompany,
+          ),
+
         Padding(
           padding: EdgeInsets.fromLTRB(
               gutter, AppSpacing.sm, gutter, AppSpacing.sm),
@@ -384,9 +487,21 @@ class _WhMedicinesPageState extends ConsumerState<WhMedicinesPage> {
   /// «٦٠ من ٤١٢ صنفاً» — ما حُمِّل وما يملك، لا خلط بينهما.
   String _countLabel(int shown) {
     if (_loading) return 'جارٍ التحميل…';
-    if (_query.trim().isNotEmpty) {
-      return shown < _total ? 'عُرض $shown من $_total نتيجة' : '$shown نتيجة';
+
+    final company = _company;
+    if (_liveQuery.trim().isNotEmpty || _query.trim().isNotEmpty) {
+      final scope = company == null ? '' : ' في «$company»';
+      return shown < _total
+          ? 'عُرض $shown من $_total نتيجة$scope'
+          : '$shown نتيجة$scope';
     }
+
+    if (company != null) {
+      return shown < _total
+          ? 'عُرض $shown من $_total صنفاً لـ«$company»'
+          : '$shown ${shown == 1 ? 'صنف' : 'صنفاً'} لـ«$company»';
+    }
+
     if (shown < _total) return 'عُرض $shown من $_total صنفاً في مستودعك';
     return '$shown ${shown == 1 ? 'دواء' : 'دواءً'} في مستودعك';
   }
@@ -459,9 +574,15 @@ class _WhMedicinesPageState extends ConsumerState<WhMedicinesPage> {
           const SizedBox(height: AppSpacing.x3l),
           EmptyState(
             icon: Icons.medication_outlined,
-            message: _query.trim().isNotEmpty
-                ? 'لا دواء يطابق بحثك في أدويتك'
-                : 'لا أدوية بعد — أضفها من «الكتالوج العام» لتبني عليها عروضك',
+            message: _liveQuery.trim().isNotEmpty || _query.trim().isNotEmpty
+                ? (_company == null
+                    ? 'لا دواء يطابق بحثك في أدويتك'
+                    : 'لا دواء يطابق بحثك ضمن «$_company» — '
+                        'جرّب إزالة فلترة الشركة')
+                : _company != null
+                    ? 'لا أصناف لـ«$_company» في مستودعك'
+                    : 'لا أدوية بعد — أضفها من «الكتالوج العام» '
+                        'لتبني عليها عروضك',
           ),
         ],
       );
@@ -476,19 +597,41 @@ class _WhMedicinesPageState extends ConsumerState<WhMedicinesPage> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
+          // ── التمرير يُحمِّل، والزرّ احتياط ─────────────────────────
+          // الجلب يبدأ قبل بلوغ النهاية بمسافة شاشة، فالمعتاد ألّا
+          // يُرى هذا الزرّ أصلاً. ويبقى لحالتين: قائمةٌ أقصر من
+          // الشاشة فلا تمرير فيها، وجلبٌ أخفق فتوقّف التمرير عن
+          // المحاولة.
           if (hasMore) ...[
             Center(
-              child: SizedBox(
-                width: 320,
-                child: AppButton(
-                  label: _loadingMore
-                      ? 'يُحمِّل…'
-                      : 'عرض ${_remaining()} صنفاً إضافياً',
-                  variant: AppButtonVariant.outline,
-                  appIcon: AppIcons.chevronDown,
-                  onPressed: _loadingMore ? null : _loadMore,
-                ),
-              ),
+              child: _loadingMore
+                  ? Padding(
+                      padding: const EdgeInsets.symmetric(
+                          vertical: AppSpacing.md),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          const SizedBox(
+                            width: 16,
+                            height: 16,
+                            child: CircularProgressIndicator(strokeWidth: 2),
+                          ),
+                          const SizedBox(width: AppSpacing.sm),
+                          Text('يُحمِّل ${_remaining()} صنفاً…',
+                              style: context.text.bodySmall
+                                  ?.copyWith(color: tk.hint)),
+                        ],
+                      ),
+                    )
+                  : SizedBox(
+                      width: 320,
+                      child: AppButton(
+                        label: 'عرض ${_remaining()} صنفاً إضافياً',
+                        variant: AppButtonVariant.outline,
+                        appIcon: AppIcons.chevronDown,
+                        onPressed: _loadMore,
+                      ),
+                    ),
             ),
             const SizedBox(height: AppSpacing.lg),
           ],
@@ -515,6 +658,7 @@ class _WhMedicinesPageState extends ConsumerState<WhMedicinesPage> {
               : 1;
 
           return ListView(
+            controller: _scroll,
             padding: EdgeInsets.fromLTRB(gutter, 0, gutter, AppSpacing.x3l),
             children: [
               GridView.builder(
@@ -699,6 +843,57 @@ class _MedicineCard extends StatelessWidget {
 /// كان شريطاً يمتدّ بعرض المكتب كلّه لجملةٍ من أربع كلمات، وهو الشكل
 /// الذي يجعل الشاشة تبدو هاتفاً مكبَّراً: عنصرٌ بُني لعرض ٣٦٠ بكسل
 /// مشدودٌ إلى ١٧٠٠.
+/// شريطُ فلترةٍ بالشركة — شرائح أفقية فوق القائمة.
+///
+/// ── لماذا شرائحُ لا قائمةٌ منسدلة؟ ─────────────────────────────────────
+/// لأنّ الشركات المهمّة قليلة: مستودعٌ بأربعمئة صنفٍ يشتريها من عشرين
+/// شركة، وأربعٌ منها تحمل نصف القائمة. والشرائح تُظهر الأربع وعدد كلٍّ
+/// منها بلا نقرة، فيُرى التوزيع قبل أن يُفلتَر.
+///
+/// والعدد على الشريحة من المستودع كلّه لا من المحمَّل: «تاميكو ٨٧» تعني
+/// سبعةً وثمانين في مستودعك، لا سبعةً وثمانين مما حُمِّل الآن.
+class _CompanyFilterBar extends StatelessWidget {
+  const _CompanyFilterBar({
+    required this.companies,
+    required this.selected,
+    required this.onPick,
+  });
+
+  final List<MedicineCompany> companies;
+  final String? selected;
+  final ValueChanged<String?> onPick;
+
+  @override
+  Widget build(BuildContext context) {
+    final gutter = context.pageGutter;
+
+    return SizedBox(
+      height: 44,
+      child: ListView(
+        scrollDirection: Axis.horizontal,
+        padding: EdgeInsets.symmetric(horizontal: gutter),
+        children: [
+          // «الكلّ» أوّلاً وهي طريق الرجوع: من فلتر ثم أراد المستودع
+          // كلّه يجدها حيث بدأ، لا في آخر عشرين شريحة.
+          AppFilterChip(
+            label: 'كل الشركات',
+            selected: selected == null,
+            onTap: () => onPick(null),
+          ),
+          for (final c in companies) ...[
+            const SizedBox(width: AppSpacing.sm),
+            AppFilterChip(
+              label: '${c.name} · ${c.count}',
+              selected: selected == c.name,
+              onTap: () => onPick(c.name),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+}
+
 class _ImportButton extends StatelessWidget {
   const _ImportButton({required this.onTap});
   final VoidCallback onTap;

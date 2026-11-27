@@ -48,6 +48,12 @@ abstract final class ApiEndpoints {
   // السعر اختياري: صنف بلا سعر يبقى في القائمة الداخلية ولا يظهر في البحث
   // المقارن عند الصيدليات.
   static const String whMedicines = '$_wh/medicines';
+
+  /// «أدويتي» كلّها في ردٍّ واحد — للتصدير وحده، لا للشاشات.
+  static const String whMedicinesAll = '$_wh/medicines/all';
+
+  /// شركاتُ «أدويتي» مع عدد أصناف كلٍّ منها — لقائمة الفلترة.
+  static const String whMedicineCompanies = '$_wh/medicines/companies';
   static String whMedicineById(String id) => '$_wh/medicines/$id';
   static String whMedicinePrice(String id) => '$_wh/medicines/$id/price';
 

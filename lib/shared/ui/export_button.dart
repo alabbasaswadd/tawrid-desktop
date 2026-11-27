@@ -18,6 +18,7 @@ class ExportButton<T> extends StatefulWidget {
     required this.title,
     required this.columns,
     required this.rows,
+    this.rowsLoader,
     this.subtitle,
     this.sheetName,
     this.facts = const [],
@@ -38,7 +39,21 @@ class ExportButton<T> extends StatefulWidget {
   final String? sheetName;
 
   final List<ExportColumn<T>> columns;
+
+  /// ما تعرضه الشاشة الآن — يُستعمَل للتصدير إن لم يكن ثمّة [rowsLoader].
+  ///
+  /// وهو أيضاً ما يُقرَّر به تعطيلُ الزرّ: شاشةٌ لا تعرض شيئاً لا شيء
+  /// لديها لتصدّره مهما كان الجالب.
   final List<T> rows;
+
+  /// يجلب الصفوف الكاملة قبل التصدير — للشاشات المرقَّمة.
+  ///
+  /// شاشةٌ تُحمّل ستّين صنفاً من أربعمئة بالتمرير كانت تُصدّر الستّين
+  /// وحدها في ملفٍّ عنوانه «أدويتي»، بلا أن يقول إنه ناقص. وهو أسوأ من
+  /// تصديرٍ يفشل: ملفٌّ ناقصٌ يبدو تامّاً يُبنى عليه قرار.
+  ///
+  /// فارغاً تُصدَّر [rows] كما هي — وهو الصحيح لشاشةٍ غير مرقَّمة.
+  final Future<List<T>> Function()? rowsLoader;
 
   /// حقائق تُعرَض فوق جدول الـ PDF — «عدد الأصناف: ٢٠».
   final List<PdfFact> facts;
@@ -70,12 +85,24 @@ class _ExportButtonState<T> extends State<ExportButton<T>> {
     }
   }
 
+  /// الصفوف الكاملة — من الجالب إن وُجد، وإلا ما تعرضه الشاشة.
+  ///
+  /// وجالبٌ يُخفق لا يُصدَّر بالناقص بديلاً عنه: ملفٌّ ناقصٌ يبدو تامّاً
+  /// أسوأ من رسالة خطأ. والخطأ يصعد إلى [_run] فيُعرَض.
+  Future<List<T>> _resolveRows() async {
+    final loader = widget.rowsLoader;
+    if (loader == null) return widget.rows;
+
+    final all = await loader();
+    return all.isEmpty ? widget.rows : all;
+  }
+
   Future<void> _excel() => _run(() async {
         final path = await exportToExcel(
           fileName: widget.fileName,
           sheetName: widget.sheetName ?? widget.title,
           columns: widget.columns,
-          rows: widget.rows,
+          rows: await _resolveRows(),
         );
 
         if (!mounted) return;
@@ -87,15 +114,31 @@ class _ExportButtonState<T> extends State<ExportButton<T>> {
         }
       });
 
-  Future<void> _pdf() => _run(() => exportToPdf(
-        fileName: widget.fileName,
-        title: widget.title,
-        subtitle: widget.subtitle,
-        columns: widget.columns,
-        rows: widget.rows,
-        facts: widget.facts,
-        totals: widget.totals,
-      ));
+  Future<void> _pdf() => _run(() async {
+        final rows = await _resolveRows();
+        if (!mounted) return;
+
+        await exportToPdf(
+          fileName: widget.fileName,
+          title: widget.title,
+          subtitle: widget.subtitle,
+          columns: widget.columns,
+          rows: rows,
+          // عددُ ما خرج فعلاً لا ما كان معروضاً: الحقيقة في الملف
+          // تُقاس بما فيه.
+          facts: [
+            for (final f in widget.facts)
+              if (f.label == _countFactLabel)
+                (label: f.label, value: '${rows.length}')
+              else
+                f,
+          ],
+          totals: widget.totals,
+        );
+      });
+
+  /// حقيقةٌ يُعاد حسابها بعد الجلب — عددُ ما خرج لا عددُ ما عُرض.
+  static const String _countFactLabel = 'عدد الأصناف';
 
   @override
   Widget build(BuildContext context) {
